@@ -1,0 +1,21 @@
+# Local data and generated outputs
+data/
+outputs/
+archive/
+other/
+qingsheng-skill/
+
+# Runtime/dependency caches
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local secrets and model logs
+.env
+.env.*
+model_call_log.json
+baseline_run.json
+
+# Office temp files
+~$*

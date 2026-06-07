@@ -1,0 +1,17 @@
+{
+  "schema_version": "chat_turn_postprocess_rules_v1",
+  "narration_triggers": [
+    "我和大家说一下",
+    "兄弟们",
+    "这个案例",
+    "开撩",
+    "复盘",
+    "总结",
+    "这里要注意",
+    "这一段",
+    "这个女生",
+    "这个男生"
+  ],
+  "valid_speakers": ["male", "female", "narration", "system", "unknown"],
+  "review_speakers": ["unknown"]
+}

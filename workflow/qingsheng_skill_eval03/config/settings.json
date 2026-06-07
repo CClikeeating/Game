@@ -1,0 +1,41 @@
+{
+  "input": {
+    "case_outputs_root": "outputs/qingsheng_cases02",
+    "default_batch_id": "batch_001_data1html_5_cases"
+  },
+  "skill": {
+    "root": "qingsheng-skill",
+    "skill_dir": "qingsheng-skill/skill",
+    "eval_runner": "qingsheng-skill/evals/run_evals.sh"
+  },
+  "output": {
+    "root": "outputs/qingsheng_skill_eval03"
+  },
+  "eval_pack": {
+    "include_modes": ["advisory", "autopilot"],
+    "file_by_mode": {
+      "advisory": "eval_advisory.json",
+      "autopilot": "eval_autopilot.json"
+    }
+  },
+  "reference_library": {
+    "summary_signal_limit": 8,
+    "summary_reply_limit": 8,
+    "search_text_fields": [
+      "case_id",
+      "stage_label",
+      "outcome",
+      "female_state",
+      "signals",
+      "good_replies",
+      "bad_replies",
+      "gold_reference"
+    ]
+  },
+  "baseline": {
+    "sut_model": "sonnet",
+    "judge_model": "sonnet",
+    "parallel": 1,
+    "label": "generated-baseline"
+  }
+}

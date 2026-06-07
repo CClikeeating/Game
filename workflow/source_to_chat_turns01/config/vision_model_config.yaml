@@ -1,0 +1,17 @@
+{
+  "schema_version": "vision_model_config_v1",
+  "enabled": true,
+  "provider": "qwen_dashscope",
+  "api_style": "dashscope_multimodal",
+  "base_url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+  "model": "qwen3-vl-flash",
+  "fallback_model": "qwen-vl-plus-latest",
+  "api_key_env": "DASHSCOPE_API_KEY",
+  "user_id": "0",
+  "timeout_seconds": 120,
+  "temperature": 0.0,
+  "max_images_per_call": 4,
+  "max_calls_per_case": 999,
+  "image_detail": "auto",
+  "output_language": "zh-CN"
+}
