@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import time
 from pathlib import Path
@@ -81,6 +82,46 @@ def should_be_narration(text: str, triggers: list[str]) -> bool:
     return any(trigger and trigger in text for trigger in triggers)
 
 
+def infer_content_type(turn: dict[str, Any], speaker: str, rules: dict[str, Any]) -> tuple[str, str]:
+    text = str(turn.get("text", "")).strip()
+    reason = str(turn.get("reason", "")).strip()
+    raw_type = str(turn.get("content_type", "")).strip()
+    valid_types = set(
+        rules.get(
+            "valid_content_types",
+            ["text", "sticker", "selfie_photo", "life_photo", "image", "narration", "system", "unknown"],
+        )
+    )
+    if raw_type in valid_types:
+        return raw_type, str(turn.get("visual_note", "")).strip()
+    reason_has_visual = any(keyword in reason for keyword in ["表情包", "贴纸", "动态图", "图片", "照片", "自拍", "生活照"])
+    if speaker == "system":
+        return "system", "系统提示"
+    if speaker == "narration":
+        if "[表情包]" in text or "[图片]" in text:
+            return "image", reason or "复盘/讲解中的配图"
+        return "narration", reason or "复盘/讲解文本"
+    if text in {"[表情包]", "[贴纸]"} or any(
+        keyword in reason for keyword in rules.get("sticker_keywords", ["表情包", "贴纸", "动态图"])
+    ):
+        return "sticker", reason or "聊天气泡中的表情包/贴纸"
+    if text.startswith("[女生自拍照片]") or any(
+        keyword in reason for keyword in rules.get("selfie_photo_keywords", ["自拍", "个人照片", "头像照"])
+    ):
+        if speaker == "female":
+            return "selfie_photo", reason or "女生发送的自拍/个人照片"
+    if text.startswith("[男生生活照]") or "生活照" in reason:
+        if speaker == "male":
+            return "life_photo", reason or "男生发送的生活照"
+    if text.startswith("[图片]") or text.startswith("[模糊头像图片]") or (
+        reason_has_visual and any(keyword in reason for keyword in rules.get("image_keywords", ["图片", "照片"]))
+    ):
+        return "image", reason or "聊天气泡中的图片"
+    if not text:
+        return "unknown", reason
+    return "text", str(turn.get("visual_note", "")).strip()
+
+
 def normalize_blocks(
     results: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
@@ -112,11 +153,14 @@ def normalize_blocks(
                     if should_be_narration(text, narration_triggers) and speaker in {"female", "unknown"}:
                         speaker = "narration"
                         notes = "; ".join(part for part in [notes, "postprocess: narration_trigger"] if part)
+                    content_type, visual_note = infer_content_type(turn, speaker, rules)
                     normalized_turns.append(
                         {
                             "turn_id": f"turn_{turn_index:04d}",
                             "speaker": speaker,
                             "text": text,
+                            "content_type": content_type,
+                            "visual_note": visual_note,
                             "time": turn.get("time", ""),
                             "confidence": turn.get("confidence", ""),
                             "reason": turn.get("reason", ""),
@@ -142,6 +186,15 @@ def speaker_counts(blocks: list[dict[str, Any]]) -> dict[str, int]:
         for turn in block.get("turns", []):
             speaker = str(turn.get("speaker", "unknown"))
             counts[speaker] = counts.get(speaker, 0) + 1
+    return counts
+
+
+def content_type_counts(blocks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for block in blocks:
+        for turn in block.get("turns", []):
+            content_type = str(turn.get("content_type", "unknown"))
+            counts[content_type] = counts.get(content_type, 0) + 1
     return counts
 
 
@@ -172,8 +225,10 @@ def write_readable(path: Path, case_id: str, blocks: list[dict[str, Any]], summa
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
-def run(case_id: str, source_output: str, mode: str, limit: int | None) -> dict[str, Any]:
-    config = load_config("vision_model_config.yaml")
+def run(case_id: str, source_output: str, mode: str, limit: int | None, user_id: str | None = None) -> dict[str, Any]:
+    config = copy.deepcopy(load_config("vision_model_config.yaml"))
+    if user_id is not None:
+        config["user_id"] = str(user_id)
     prompt = load_config("vision_prompt.yaml")
     rules = load_config("postprocess_rules.yaml")
     client = VisionClient(config, prompt)
@@ -204,6 +259,7 @@ def run(case_id: str, source_output: str, mode: str, limit: int | None) -> dict[
         "mode": mode,
         "model": config.get("model"),
         "provider": config.get("provider"),
+        "user_id": str(config.get("user_id", "")),
         "image_count": len(items),
         "call_count": len(results),
         "success_count": sum(1 for item in results if item["status"] == "model_success"),
@@ -211,6 +267,7 @@ def run(case_id: str, source_output: str, mode: str, limit: int | None) -> dict[
         "elapsed_seconds": round(time.time() - start, 2),
         "status_counts": {},
         "speaker_counts": speaker_counts(blocks),
+        "content_type_counts": content_type_counts(blocks),
         "need_review_turns": sum(
             1 for block in blocks for turn in block.get("turns", []) if turn.get("need_review")
         ),
@@ -233,8 +290,9 @@ def main() -> None:
     parser.add_argument("--source-output", default="data1html_bad_temper")
     parser.add_argument("--mode", choices=["single", "group", "whole"], default="group")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--user-id")
     args = parser.parse_args()
-    print(json.dumps(run(args.case_id, args.source_output, args.mode, args.limit), ensure_ascii=False, indent=2))
+    print(json.dumps(run(args.case_id, args.source_output, args.mode, args.limit, args.user_id), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

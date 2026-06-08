@@ -12,8 +12,8 @@
     "quality"
   ],
   "model_judgment_fields": {
-    "case_facts": ["relationship_arc", "male_goal", "female_state", "outcome"],
-    "qingsheng_mapping": ["stage_number", "stage_label", "stage_confidence", "stage_judgment", "stage_evidence", "signals"],
+    "case_facts": ["relationship_arc", "male_goal", "male_profile", "female_state", "outcome"],
+    "qingsheng_mapping": ["stage_number", "stage_label", "stage_confidence", "stage_judgment", "cross_stage_signals", "stage_evidence", "signals"],
     "key_moments": ["turning_points", "good_replies", "bad_replies"],
     "gold_reference": ["reference_type", "observed_good_reply", "model_suggested_reply", "next_reply", "why", "acceptable_alternatives"],
     "eval_rubric": ["advisory_must_include", "advisory_must_not_include", "autopilot_must_include", "autopilot_must_not_include"]

@@ -14,6 +14,32 @@ REVIEW_SYSTEM_PROMPT = """你是 qingsheng skill 案例库的复核专家。
 必须只输出合法 JSON，不要 Markdown，不要解释 JSON 之外的内容。"""
 
 
+FACTUAL_LABEL_RULES = """输入中的 speaker/content_type/visual_note 是管道1给出的事实级标签。管道1只做客观结构化，不判断 IOI/IOD、关系阶段、好坏回复或策略建议。
+管道2才负责解释这些事实：女生自拍照可以作为信号候选，但必须结合上下文；表情包主要作为情绪回应参考；男生生活照主要作为男方展示材料；narration 是复盘/讲解材料，可以作为案例参考，但不能当成女方或男方真实聊天发言。"""
+
+
+CASE_INTERPRETATION_RULES = """这些案例大多是成功案例或至少有可学习点的案例，但截图/长图可能不完整。不要因为缺少前置背景就过度保守，也不要编造没有证据的背景；必须区分“已见证据”和“可能缺失背景”。
+阶段是连续光谱，不是硬分类。允许整体主阶段和局部穿插阶段同时存在，例如整体处于阶段4邀约见面，但局部出现阶段6亲密升级/性暗示/身体话题。primary_stage 表示整体大阶段，stage_range 表示跨度，strategy_stage 表示后续建议应采用的策略阶段，cross_stage_signals 记录穿插信号。
+请输出 male_profile 作为男生表现画像，但它只能是倾向性参考，不能作为定死的人格判断。分析时关注框架感、引导感、需求感、边界感、幽默感、情绪稳定性和推进节奏；必须引用 turn_id 作为依据，避免因为单句强框架就硬判整体人设。"""
+
+
+STAGE_BIAS_GUARD = """阶段防偏规则：
+1. 这些案例可能大多是成功案例，但不能因为“结果成功”就倒推到阶段6或阶段7。
+2. primary_stage 必须由聊天当下的证据决定；strategy_stage 可以比 primary_stage 更进取，但必须说明原因。
+3. stage_range 一般不要超过3个连续阶段。只有证据同时覆盖开场、邀约、线下、亲密、确立关系等多个明显阶段时，才允许更宽范围，并必须解释。
+4. 阶段7“确立关系”必须有明确关系确认、称呼承诺、排他关系或类似证据。亲密调情、叫老公、幻想、性张力不能单独判为阶段7。
+5. 局部高阶段信号应放入 cross_stage_signals，不要直接把整体主阶段硬抬高。"""
+
+
+GOLD_REFERENCE_RULES = """gold_reference 选择规则：
+1. gold_reference 不是自由创作。优先从原案例真实发生的男方回复中选择，不优先模型新写。
+2. 优先选择最有可迁移价值的“关键动作”：化解测试、后撤不自证、保持框架、排他性表达、边界感、低需求感、自然邀约、情绪稳定。
+3. 不要只因为一句话更暧昧、更刺激、更推进，就把它选为 gold。性张力回复只有在它确实安全化解测试或推进关系时才可选。
+4. 如果原案例中存在明显优秀回复，例如“我们之间没有别人”这类排他性/框架表达，必须优先考虑它，而不是换成普通调情句。
+5. observed_good_reply 必须引用原案例 turn_id 和原句。next_reply 默认等于 observed_good_reply.quote。
+6. 只有原案例完全没有可学习的男方好回复，才允许使用 model_suggested_reply。"""
+
+
 def compact_case_for_model(case: dict[str, Any], max_turns: int | None = None) -> dict[str, Any]:
     turns: list[dict[str, Any]] = []
     for block in case.get("blocks", []):
@@ -25,6 +51,10 @@ def compact_case_for_model(case: dict[str, Any], max_turns: int | None = None) -
                     "speaker": turn.get("speaker", ""),
                     "time": turn.get("time", ""),
                     "text": turn.get("text", ""),
+                    "content_type": turn.get("content_type", "text"),
+                    "visual_note": turn.get("visual_note", ""),
+                    "reason": turn.get("reason", ""),
+                    "source_image": turn.get("source_image", ""),
                     "need_review": turn.get("need_review", False),
                 }
             )
@@ -45,16 +75,52 @@ def transcript_text(case_pack: dict[str, Any]) -> str:
             str(turn.get("turn_id", "")),
             str(turn.get("block_id", "")),
             str(turn.get("speaker", "")),
+            str(turn.get("content_type", "text")),
         ]
         if turn.get("time"):
             parts.append(str(turn["time"]))
-        lines.append(f"[{' | '.join(parts)}] {turn.get('text', '')}")
+        visual_note = f"（视觉事实：{turn.get('visual_note')}）" if turn.get("visual_note") else ""
+        lines.append(f"[{' | '.join(parts)}] {turn.get('text', '')}{visual_note}")
     return "\n".join(lines)
 
 
-def primary_prompt(case: dict[str, Any], mapping: dict[str, Any]) -> str:
+def format_annotation_memory(annotation_memory: dict[str, Any] | None) -> str:
+    if not annotation_memory:
+        return ""
+    lines = ["项目标注记忆（主模型和复核模型都必须参考；样例不是机械规则）："]
+    sections = [
+        ("hard_rules", "硬规则"),
+        ("preference_rules", "偏好规则"),
+        ("example_memory", "样例记忆"),
+    ]
+    for key, title in sections:
+        items = annotation_memory.get(key, []) if isinstance(annotation_memory.get(key, []), list) else []
+        if not items:
+            continue
+        lines.append(f"{title}：")
+        for item in items:
+            if key == "example_memory":
+                lines.append(
+                    f"- {item.get('pattern', '')} 例：{item.get('example', '')}。{item.get('note', '')}"
+                )
+            else:
+                lines.append(f"- {item.get('rule', '')}")
+    return "\n".join(lines)
+
+
+def primary_prompt(case: dict[str, Any], mapping: dict[str, Any], annotation_memory: dict[str, Any] | None = None) -> str:
     case_pack = compact_case_for_model(case)
-    return f"""下面是一套完整聊天记录，不是局部片段。
+    return f"""{FACTUAL_LABEL_RULES}
+
+{CASE_INTERPRETATION_RULES}
+
+{STAGE_BIAS_GUARD}
+
+{GOLD_REFERENCE_RULES}
+
+{format_annotation_memory(annotation_memory)}
+
+下面是一套完整聊天记录，不是局部片段。
 这套聊天已经有完整结果。请从完整关系发展回看，不要只根据最后几句判断阶段。
 你需要区分两个视角：
 1. retrospective_case_analysis：站在完整案例角度复盘。
@@ -75,6 +141,16 @@ qingsheng 标准阶段和信号类型：
   "case_facts": {{
     "relationship_arc": "用中文概括整套关系发展",
     "male_goal": "男方核心目标",
+    "male_profile": {{
+      "summary": "一句话概括男生整体表现",
+      "frame_style": "框架强/框架弱/稳定/被动/过度迎合等，作为倾向参考",
+      "leading_style": "主动引导/顺势推进/被动回应/强推等",
+      "neediness_level": "low/medium/high",
+      "communication_traits": ["幽默", "克制", "边界感", "松弛感"],
+      "evidence_turn_ids": ["turn_0001"],
+      "confidence": 0.0,
+      "caveat": "这是基于当前案例材料的倾向性参考，不是定死判断"
+    }},
     "female_state": "女方状态/兴趣水平",
     "outcome": "这套聊天最后实际走向；不知道则写 unknown"
   }},
@@ -93,6 +169,7 @@ qingsheng 标准阶段和信号类型：
       "why_strategy_stage": "为什么后续 skill/eval 应按这个策略阶段处理"
     }},
     "stage_evidence": [{{"turn_id": "turn_0001", "quote": "原句", "why": "为什么支持阶段判断"}}],
+    "cross_stage_signals": [{{"from_stage": 4, "to_stage": 6, "turn_id": "turn_0001", "quote": "原句", "why": "整体阶段之外出现的局部高/低阶段信号", "impact_on_strategy": "它如何影响后续策略，但不直接硬改主阶段"}}],
     "signals": [{{"type": "IOI", "turn_id": "turn_0001", "quote": "原句", "interpretation": "解释", "strength": "low/medium/high"}}]
   }},
   "key_moments": {{
@@ -126,12 +203,28 @@ qingsheng 标准阶段和信号类型：
 """
 
 
-def review_prompt(case: dict[str, Any], primary_judgment: dict[str, Any], mapping: dict[str, Any]) -> str:
+def review_prompt(
+    case: dict[str, Any],
+    primary_judgment: dict[str, Any],
+    mapping: dict[str, Any],
+    annotation_memory: dict[str, Any] | None = None,
+) -> str:
     case_pack = compact_case_for_model(case)
-    return f"""下面是一套完整聊天记录，不是局部片段。
+    return f"""{FACTUAL_LABEL_RULES}
+
+{CASE_INTERPRETATION_RULES}
+
+{STAGE_BIAS_GUARD}
+
+{GOLD_REFERENCE_RULES}
+
+{format_annotation_memory(annotation_memory)}
+
+下面是一套完整聊天记录，不是局部片段。
 这套聊天已经有完整结果。请从完整关系发展回看，复核 DeepSeek 的主判断。
 不要只根据最后几句判断阶段。所有不同意项必须引用 turn_id。
 阶段不是硬边界，而是连续关系光谱。复核时优先检查 stage_judgment 的 primary_stage、stage_range、strategy_stage 是否合理，不要只争一个单点阶段编号。
+复核 male_profile 时，只检查它是否是有证据支持的倾向性画像，不要把它当成硬人格标签。复核 cross_stage_signals 时，检查 DeepSeek 是否正确区分整体主阶段和局部穿插阶段。
 所有模型请求的 user_id 已设置为 0。
 复核 gold_reference 时，要优先检查它是否学习了原案例中真实有效的男方回复；如果模型另写的回复偏离了原案例好回复，请把 observed_good_reply / next_reply 作为冲突项指出。
 

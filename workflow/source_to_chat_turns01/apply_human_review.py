@@ -15,12 +15,34 @@ CHOICE_TO_SPEAKER = {
     "改为女生": "female",
     "男生表情包": "male",
     "女生表情包": "female",
+    "女生自拍照片": "female",
+    "男生生活照": "male",
+    "普通图片": "unknown",
+    "复盘/讲解": "narration",
     "改为旁白": "narration",
     "改为系统": "system",
     "无法判断": "unknown",
 }
 
 STICKER_CHOICES = {"男生表情包", "女生表情包"}
+CHOICE_TO_CONTENT_TYPE = {
+    "男生表情包": "sticker",
+    "女生表情包": "sticker",
+    "女生自拍照片": "selfie_photo",
+    "男生生活照": "life_photo",
+    "普通图片": "image",
+    "复盘/讲解": "narration",
+    "改为旁白": "narration",
+    "改为系统": "system",
+}
+CHOICE_TO_VISUAL_NOTE = {
+    "男生表情包": "男生发送的表情包",
+    "女生表情包": "女生发送的表情包",
+    "女生自拍照片": "女生发送的自拍/个人照片",
+    "男生生活照": "男生发送的生活照",
+    "普通图片": "聊天中的普通图片",
+    "复盘/讲解": "复盘/讲解内容",
+}
 
 EMPTY_TEXT_MARKERS = {"空白无内容", "空白 无内容", "无内容", "没有内容", "空白", "跳过"}
 SPEAKER_PREFIX = {
@@ -162,20 +184,29 @@ def apply_rows(batch_dir: Path, review_path: Path) -> dict[str, Any]:
                             break
                         if target_speaker:
                             turn["speaker"] = target_speaker
+                        content_type = CHOICE_TO_CONTENT_TYPE.get(choice, "")
+                        if content_type:
+                            turn["content_type"] = content_type
+                        visual_note = CHOICE_TO_VISUAL_NOTE.get(choice, "")
+                        if visual_note:
+                            turn["visual_note"] = visual_note
                         if choice in STICKER_CHOICES and not corrected_text:
                             turn["text"] = "[表情包]"
-                            turn["content_type"] = "sticker"
+                        elif choice == "女生自拍照片" and not corrected_text:
+                            turn["text"] = "[女生自拍照片]"
+                        elif choice == "男生生活照" and not corrected_text:
+                            turn["text"] = "[男生生活照]"
+                        elif choice == "普通图片" and not corrected_text:
+                            turn["text"] = "[图片]"
                         if corrected_text:
                             turn["text"] = corrected_text
-                            if choice in STICKER_CHOICES:
-                                turn["content_type"] = "sticker"
                         turn["need_review"] = False
                         turn["notes"] = "; ".join(
                             part
                             for part in [
                                 str(turn.get("notes", "")).strip(),
                                 f"human_review: {review_type} corrected",
-                                "human_review: sticker" if choice in STICKER_CHOICES else "",
+                                f"human_review: {content_type}" if content_type else "",
                             ]
                             if part
                         )
@@ -201,9 +232,10 @@ def apply_rows(batch_dir: Path, review_path: Path) -> dict[str, Any]:
                             "source_image": block.get("source_image", ""),
                             "crop_box": block.get("crop_box", []),
                             "need_review": False,
-                            "content_type": "sticker" if choice in STICKER_CHOICES else "text",
+                            "content_type": CHOICE_TO_CONTENT_TYPE.get(choice, "text"),
+                            "visual_note": CHOICE_TO_VISUAL_NOTE.get(choice, ""),
                             "notes": "human_review_applied; original model call blocked by provider safety policy"
-                            + ("; human_review: sticker" if choice in STICKER_CHOICES else ""),
+                            + (f"; human_review: {CHOICE_TO_CONTENT_TYPE.get(choice)}" if CHOICE_TO_CONTENT_TYPE.get(choice) else ""),
                         }
                     )
                 block["extracted_text"] = corrected_text
@@ -289,6 +321,7 @@ def refresh_case_quality(batch_dir: Path, case: dict[str, Any]) -> dict[str, Any
     previous = read_json(quality_path) if quality_path.exists() else data.get("summary", {})
     raw = read_json(raw_path) if raw_path.exists() else {"results": []}
     blocks = data.get("blocks", [])
+    ensure_content_fields(blocks)
     results = raw.get("results", [])
     quality = {
         **previous,
@@ -303,6 +336,7 @@ def refresh_case_quality(batch_dir: Path, case: dict[str, Any]) -> dict[str, Any
         else previous.get("failure_count", 0),
         "status_counts": status_counts(results) if results else previous.get("status_counts", {}),
         "speaker_counts": speaker_counts(blocks),
+        "content_type_counts": content_type_counts(blocks),
         "need_review_turns": sum(
             1 for block in blocks for turn in block.get("turns", []) if turn.get("need_review")
         ),
@@ -313,12 +347,65 @@ def refresh_case_quality(batch_dir: Path, case: dict[str, Any]) -> dict[str, Any
     return quality
 
 
+def ensure_content_fields(blocks: list[dict[str, Any]]) -> None:
+    for block in blocks:
+        for turn in block.get("turns", []):
+            if turn.get("content_type"):
+                if (
+                    turn.get("content_type") == "image"
+                    and "human_review: image" not in str(turn.get("notes", ""))
+                    and not str(turn.get("text", "")).strip().startswith(("[图片]", "[模糊头像图片]"))
+                    and "图片" not in str(turn.get("reason", ""))
+                    and "照片" not in str(turn.get("reason", ""))
+                ):
+                    turn["content_type"] = "text"
+                    turn["visual_note"] = ""
+                turn.setdefault("visual_note", "")
+                continue
+            speaker = str(turn.get("speaker", "unknown"))
+            text = str(turn.get("text", "")).strip()
+            reason = str(turn.get("reason", "")).strip()
+            if speaker == "system":
+                turn["content_type"] = "system"
+                turn.setdefault("visual_note", "系统提示")
+            elif speaker == "narration":
+                turn["content_type"] = "narration" if "[表情包]" not in text and "[图片]" not in text else "image"
+                turn.setdefault("visual_note", reason or "复盘/讲解内容")
+            elif text in {"[表情包]", "[贴纸]"} or "表情包" in reason or "贴纸" in reason or "动态图" in reason:
+                turn["content_type"] = "sticker"
+                turn.setdefault("visual_note", "聊天气泡中的表情包/贴纸")
+            elif (text.startswith("[女生自拍照片]") or "自拍" in reason or "个人照片" in reason) and speaker == "female":
+                turn["content_type"] = "selfie_photo"
+                turn.setdefault("visual_note", "女生发送的自拍/个人照片")
+            elif (text.startswith("[男生生活照]") or "生活照" in reason) and speaker == "male":
+                turn["content_type"] = "life_photo"
+                turn.setdefault("visual_note", "男生发送的生活照")
+            elif text.startswith("[图片]") or text.startswith("[模糊头像图片]") or "图片" in reason or "照片" in reason:
+                turn["content_type"] = "image"
+                turn.setdefault("visual_note", "聊天中的图片")
+            elif text:
+                turn["content_type"] = "text"
+                turn.setdefault("visual_note", "")
+            else:
+                turn["content_type"] = "unknown"
+                turn.setdefault("visual_note", "")
+
+
 def speaker_counts(blocks: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for block in blocks:
         for turn in block.get("turns", []):
             speaker = str(turn.get("speaker", "unknown"))
             counts[speaker] = counts.get(speaker, 0) + 1
+    return counts
+
+
+def content_type_counts(blocks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for block in blocks:
+        for turn in block.get("turns", []):
+            content_type = str(turn.get("content_type", "unknown"))
+            counts[content_type] = counts.get(content_type, 0) + 1
     return counts
 
 

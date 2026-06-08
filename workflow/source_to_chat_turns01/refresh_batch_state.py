@@ -38,6 +38,7 @@ def refresh(batch_dir: Path, rebuild_review: bool = True) -> dict[str, object]:
     if rebuild_review:
         review_rows = build_rows(batch_dir)
         write_xlsx(batch_dir / "batch_001_human_review.xlsx", review_rows)
+        write_xlsx(batch_dir / "human_review.xlsx", review_rows)
         for row in review_rows:
             review_type = row.get("review_type", "")
             review_counts[review_type] = review_counts.get(review_type, 0) + 1
