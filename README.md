@@ -35,4 +35,14 @@ data/raw/*
 - `test_questions/`：用来测试 skill 的 eval 题。
 - `experience_pack/`：未来部署 skill 时可带走的干净经验包。
 
+## 当前运行层
+
+`workflow/qingsheng_skill_runtime04` 用于把 `qingsheng-skill` 接到模型和知识库上：
+
+- 文字输入：Qwen `qwen3.7-plus` + 百炼知识库 `file_search`。
+- 图片输入：默认先用 Qwen3-VL 轻量视觉模型提取聊天摘要，再用摘要检索百炼知识库。
+- 图片模式可切换：`fast` 加载 skill 后由视觉模型直接回答，`rag` 先摘要再检索，`auto` 当前等同 `rag`。
+
+后续需要单独优化 runtime prompt：把完整 skill 和 references 压缩成产品运行版短提示词，以降低 token 成本和响应时间。
+
 `archive/` 里的内容只作历史保留，后续主流程不要读取它。

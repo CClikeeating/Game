@@ -13,5 +13,10 @@
     "手工修正",
     "标记为不确定",
     "跳过"
-  ]
+  ],
+  "stage_review": {
+    "split_nodes": true,
+    "max_nodes_per_issue": 4,
+    "prefer_review_model": true
+  }
 }

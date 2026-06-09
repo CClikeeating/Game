@@ -32,6 +32,14 @@
       "gold_reference"
     ]
   },
+  "rag_knowledge_base": {
+    "directory": "rag_knowledge_base",
+    "cases_directory": "cases",
+    "index_filename": "qingsheng_cases_index.jsonl",
+    "manifest_filename": "upload_manifest.csv",
+    "summary_filename": "rag_build_summary.json",
+    "max_list_items": 8
+  },
   "baseline": {
     "sut_model": "sonnet",
     "judge_model": "sonnet",

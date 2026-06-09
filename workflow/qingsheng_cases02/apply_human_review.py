@@ -15,7 +15,10 @@ def rows_from_xlsx(path: Path) -> list[dict[str, Any]]:
     wb = load_workbook(path)
     ws = wb["human_review"]
     headers = [cell.value for cell in ws[1]]
-    sidecar = review_index(path.with_name("human_review_index.json"))
+    sidecar_path = path.with_name(f"{path.stem}_index.json")
+    if not sidecar_path.exists():
+        sidecar_path = path.with_name("human_review_index.json")
+    sidecar = review_index(sidecar_path)
     rows = []
     for values in ws.iter_rows(min_row=2, values_only=True):
         row = {headers[column_index]: value for column_index, value in enumerate(values)}
@@ -53,18 +56,27 @@ def apply_review(batch_id: str, review_path: Path) -> dict[str, Any]:
         corrected_value = str(row.get("corrected_value") or "").strip()
         if not field_path:
             field_path = infer_field_path(case_card, row)
-            row["field_path"] = field_path
+        field_path = normalize_field_path(field_path)
+        row["field_path"] = field_path
+        if is_legacy_broad_stage_row(row) and not is_actionable_stage_choice(row):
+            continue
         if choice == "确认DeepSeek":
+            apply_stage_node_feedback(case_card, row)
             mark_review(case_card, row, "accepted_primary")
         elif choice == "确认Qwen":
-            apply_review_value(case_card, row)
+            if not apply_stage_node_feedback(case_card, row):
+                apply_review_value(case_card, row)
             mark_review(case_card, row, "accepted_review")
         elif choice == "手工修正" and corrected_value:
-            if field_path:
+            if apply_stage_node_feedback(case_card, row):
+                pass
+            elif field_path:
                 apply_manual_value(case_card, field_path, corrected_value)
             mark_review(case_card, row, "manual_corrected")
         elif corrected_value:
-            if field_path:
+            if apply_stage_node_feedback(case_card, row):
+                pass
+            elif field_path:
                 apply_manual_value(case_card, field_path, corrected_value)
             mark_review(case_card, row, "manual_corrected")
         elif choice == "标记为不确定":
@@ -91,7 +103,7 @@ def parse_value(text: str) -> Any:
 
 
 def apply_review_value(case_card: dict[str, Any], row: dict[str, Any]) -> None:
-    field_path = str(row.get("field_path") or "")
+    field_path = normalize_field_path(str(row.get("field_path") or ""))
     if not field_path:
         return
     review_value = value_by_path(case_card.get("model_judgments", {}).get("review", {}), field_path)
@@ -99,7 +111,46 @@ def apply_review_value(case_card: dict[str, Any], row: dict[str, Any]) -> None:
         set_path(case_card, field_path, review_value)
 
 
+def is_legacy_broad_stage_row(row: dict[str, Any]) -> bool:
+    if str(row.get("review_type") or "") == "stage_node_check":
+        return False
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("field_path", "field_cn", "review_scope", "review_question")
+    )
+    stage_markers = ("stage", "阶段", "主判断阶段", "策略阶段", "阶段范围")
+    return any(marker in text for marker in stage_markers)
+
+
+def is_actionable_stage_choice(row: dict[str, Any]) -> bool:
+    choice = str(row.get("your_choice") or "")
+    field_path = normalize_field_path(str(row.get("field_path") or ""))
+    if "stage_judgment" not in field_path:
+        return False
+    return choice in {"确认DeepSeek", "确认Qwen", "手工修正"} or bool(str(row.get("corrected_value") or "").strip())
+
+
+def apply_stage_node_feedback(case_card: dict[str, Any], row: dict[str, Any]) -> bool:
+    if str(row.get("review_type") or "") != "stage_node_check":
+        return False
+    mapping = case_card.setdefault("qingsheng_mapping", {})
+    feedback = mapping.setdefault("stage_node_reviews", [])
+    review_id = str(row.get("review_id") or "")
+    feedback[:] = [item for item in feedback if item.get("review_id") != review_id]
+    feedback.append(
+        {
+            "review_id": review_id,
+            "turn_ids": str(row.get("turn_ids") or ""),
+            "choice": str(row.get("your_choice") or ""),
+            "corrected_value": str(row.get("corrected_value") or ""),
+            "notes": str(row.get("notes") or ""),
+        }
+    )
+    return True
+
+
 def apply_manual_value(case_card: dict[str, Any], field_path: str, corrected_value: str) -> None:
+    field_path = normalize_field_path(field_path)
     stage_patch = parse_stage_correction(corrected_value)
     is_stage_field = "stage" in field_path or field_path in {"qingsheng_mapping.stage_number", "qingsheng_mapping.stage_label"}
     if stage_patch and is_stage_field:
@@ -158,6 +209,7 @@ def parse_stage_correction(text: str) -> dict[str, Any]:
 
 
 def set_path(data: dict[str, Any], dotted_path: str, value: Any) -> None:
+    dotted_path = normalize_field_path(dotted_path)
     parts = [part for part in dotted_path.split(".") if part]
     if not parts:
         return
@@ -171,6 +223,7 @@ def set_path(data: dict[str, Any], dotted_path: str, value: Any) -> None:
 
 
 def value_by_path(data: Any, dotted_path: str) -> Any:
+    dotted_path = normalize_field_path(dotted_path)
     current = data
     for part in [part for part in dotted_path.split(".") if part]:
         if isinstance(current, dict):
@@ -198,11 +251,26 @@ def mark_review(case_card: dict[str, Any], row: dict[str, Any], status: str) -> 
         }
     )
     for item in quality.get("review_items", []):
-        same_field = item.get("field", "") == row.get("field_path", "")
+        item_field = normalize_field_path(str(item.get("field", "")))
+        row_field = normalize_field_path(str(row.get("field_path", "")))
+        source_field = normalize_field_path(str(row.get("source_field", ""))) if row.get("source_field") else ""
+        same_field = item_field == row_field
+        same_source_field = source_field and item_field == source_field
         same_type = row.get("review_type") and item.get("type", "") == row.get("review_type", "")
-        same_cn = field_path_cn(str(item.get("field", ""))) == str(row.get("field_cn") or "")
-        if same_field or same_type or same_cn:
+        same_source_type = row.get("source_review_type") and item.get("type", "") == row.get("source_review_type", "")
+        same_cn = field_path_cn(item_field) == str(row.get("field_cn") or "")
+        if same_field or same_source_field or same_type or same_source_type or same_cn:
             item["human_review_status"] = status
+
+
+def normalize_field_path(field_path: str) -> str:
+    if field_path.startswith("stage_judgment."):
+        return f"qingsheng_mapping.{field_path}"
+    if field_path.startswith("cross_stage_signals"):
+        return f"qingsheng_mapping.{field_path}"
+    if field_path.startswith("stage_evidence"):
+        return f"qingsheng_mapping.{field_path}"
+    return field_path
 
 
 def unresolved_review_count(case_card: dict[str, Any]) -> int:

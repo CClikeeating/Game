@@ -35,6 +35,7 @@ REVIEW_FIELDS = [
     "source_excerpt",
     "deepseek_value",
     "qwen_value",
+    "recommended_choice",
     "why_uncertain",
     "impact_if_wrong",
     "your_choice",
@@ -49,6 +50,10 @@ INDEX_FIELDS = [
     "source_file",
     "prepared_source_dir",
     "review_type",
+    "source_review_type",
+    "source_field",
+    "node_index",
+    "node_count",
     "field_path",
     "field_cn",
     "turn_ids",
@@ -773,7 +778,8 @@ def collect_review_rows(
         for item in (case_card.get("quality", {}).get("review_items", []) or [])
         if not item.get("human_review_status")
     ]
-    for offset, item in enumerate(group_review_items(pending_items)):
+    display_items = expand_review_items(group_review_items(pending_items), case_card, review_rules)
+    for offset, item in enumerate(display_items):
         turn_ids = item.get("evidence_turn_ids") or [item.get("turn_id", "")]
         turn_ids = [turn_id for turn_id in turn_ids if turn_id]
         turn_ids = review_turn_ids(item, case_card, turn_ids)
@@ -791,6 +797,10 @@ def collect_review_rows(
                 "original_path": source_map.get("original_path", ""),
                 "prepared_source_dir": source_map.get("prepared_source_dir", ""),
                 "review_type": item.get("type", "uncertain"),
+                "source_review_type": item.get("source_review_type", ""),
+                "source_field": item.get("source_field", ""),
+                "node_index": item.get("node_index", ""),
+                "node_count": item.get("node_count", ""),
                 "field_path": item.get("field", ""),
                 "field_cn": field_path_cn(str(item.get("field", ""))),
                 "turn_ids": ", ".join(turn_ids),
@@ -799,6 +809,7 @@ def collect_review_rows(
                 "source_excerpt": source_excerpt(case_card, turn_ids),
                 "deepseek_value": model_side_value(case_card, item, "primary"),
                 "qwen_value": model_side_value(case_card, item, "review"),
+                "recommended_choice": recommended_choice(item, review_rules),
                 "why_uncertain": item.get("reason", item.get("detail", "")),
                 "impact_if_wrong": item.get("impact", ""),
                 "your_choice": "",
@@ -810,6 +821,73 @@ def collect_review_rows(
     return rows
 
 
+def expand_review_items(
+    items: list[dict[str, Any]],
+    case_card: dict[str, Any],
+    review_rules: dict[str, Any],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in items:
+        output.extend(expand_stage_review_item(item, case_card, review_rules))
+    return output
+
+
+def expand_stage_review_item(
+    item: dict[str, Any],
+    case_card: dict[str, Any],
+    review_rules: dict[str, Any],
+) -> list[dict[str, Any]]:
+    stage_rules = review_rules.get("stage_review", {}) if isinstance(review_rules, dict) else {}
+    if not stage_rules.get("split_nodes", True):
+        return [item]
+    field = str(item.get("field", ""))
+    item_type = str(item.get("type", ""))
+    if not is_stage_review(field, item_type):
+        return [item]
+    explicit_turn_ids = item.get("evidence_turn_ids") or [item.get("turn_id", "")]
+    turn_ids = [str(turn_id).strip() for turn_id in explicit_turn_ids if str(turn_id).strip()]
+    if not turn_ids:
+        return [item]
+    turn_ids = list(dict.fromkeys(turn_ids))
+    max_nodes = int(stage_rules.get("max_nodes_per_issue", 8) or 8)
+    turn_ids = turn_ids[:max_nodes]
+    if len(turn_ids) <= 1:
+        return [item]
+    expanded = []
+    for index, turn_id in enumerate(turn_ids, start=1):
+        node_item = copy.deepcopy(item)
+        node_item["type"] = "stage_node_check"
+        node_item["source_review_type"] = item_type
+        node_item["source_field"] = field
+        node_item["turn_id"] = turn_id
+        node_item["evidence_turn_ids"] = [turn_id]
+        node_item["node_index"] = index
+        node_item["node_count"] = len(turn_ids)
+        node_item["reason"] = (
+            f"原问题是阶段判断/阶段范围可能过宽。现在拆成单个节点复核："
+            f"第 {index}/{len(turn_ids)} 个节点 {turn_id}。\n"
+            f"{item.get('reason', item.get('detail', ''))}"
+        ).strip()
+        expanded.append(node_item)
+    return expanded
+
+
+def stage_evidence_turn_ids(case_card: dict[str, Any]) -> list[str]:
+    mapping = case_card.get("qingsheng_mapping", {})
+    if not isinstance(mapping, dict):
+        return []
+    turn_ids = []
+    for evidence in mapping.get("stage_evidence", []) or []:
+        turn_id = str(evidence.get("turn_id", "")).strip()
+        if turn_id:
+            turn_ids.append(turn_id)
+    for signal in mapping.get("cross_stage_signals", []) or []:
+        turn_id = str(signal.get("turn_id", "")).strip()
+        if turn_id:
+            turn_ids.append(turn_id)
+    return list(dict.fromkeys(turn_ids))
+
+
 def review_turn_ids(item: dict[str, Any], case_card: dict[str, Any], turn_ids: list[str]) -> list[str]:
     if turn_ids:
         return turn_ids
@@ -817,16 +895,7 @@ def review_turn_ids(item: dict[str, Any], case_card: dict[str, Any], turn_ids: l
     item_type = str(item.get("type", ""))
     mapping = case_card.get("qingsheng_mapping", {})
     if is_stage_review(field, item_type):
-        evidence_turns = []
-        for evidence in mapping.get("stage_evidence", []) or []:
-            turn_id = str(evidence.get("turn_id", "")).strip()
-            if turn_id:
-                evidence_turns.append(turn_id)
-        for signal in mapping.get("cross_stage_signals", []) or []:
-            turn_id = str(signal.get("turn_id", "")).strip()
-            if turn_id:
-                evidence_turns.append(turn_id)
-        return list(dict.fromkeys(evidence_turns))[:8]
+        return stage_evidence_turn_ids(case_card)[:8]
     if "gold_reference" in field:
         observed = case_card.get("gold_reference", {}).get("observed_good_reply", {})
         if isinstance(observed, dict) and observed.get("turn_id"):
@@ -850,6 +919,15 @@ def is_stage_review(field: str, item_type: str) -> bool:
 def review_scope(item: dict[str, Any], case_card: dict[str, Any], turn_ids: list[str]) -> str:
     field = str(item.get("field", ""))
     item_type = str(item.get("type", ""))
+    if item_type == "stage_node_check":
+        node_index = item.get("node_index", "")
+        node_count = item.get("node_count", "")
+        source_type = item.get("source_review_type", "")
+        return (
+            "判断范围：只判断这一行的单个阶段节点，不判断整套聊天，也不判断多个节点的合并范围。"
+            f"节点 {node_index}/{node_count}，来源问题={source_type}。"
+            f"重点只看 turn_ids：{', '.join(turn_ids)} 以及 source_excerpt 里它前后各几句。"
+        )
     if is_stage_review(field, item_type):
         mapping = case_card.get("qingsheng_mapping", {})
         stage_judgment = mapping.get("stage_judgment", {}) if isinstance(mapping.get("stage_judgment"), dict) else {}
@@ -871,9 +949,16 @@ def review_scope(item: dict[str, Any], case_card: dict[str, Any], turn_ids: list
 def review_priority(item: dict[str, Any]) -> str:
     item_type = str(item.get("type", ""))
     field = str(item.get("field", ""))
+    if item_type == "stage_node_check":
+        source_type = str(item.get("source_review_type", ""))
+        if source_type in {"model_conflict", "overwide_stage_range", "missing_stage_range", "stage7_evidence_check"}:
+            return "must_review"
+        return "optional_review"
     if item_type in {"primary_model_failed", "review_model_failed", "stage7_evidence_check"}:
         return "must_review"
-    if "gold_reference" in field or item_type in {"overwide_stage_range", "missing_stage_range"}:
+    if "gold_reference" in field or item_type == "missing_stage_range":
+        return "must_review"
+    if item_type == "overwide_stage_range" and item.get("evidence_turn_ids"):
         return "must_review"
     if item_type == "model_conflict":
         return "must_review"
@@ -882,11 +967,26 @@ def review_priority(item: dict[str, Any]) -> str:
     return "optional_review"
 
 
+def recommended_choice(item: dict[str, Any], review_rules: dict[str, Any]) -> str:
+    stage_rules = review_rules.get("stage_review", {}) if isinstance(review_rules, dict) else {}
+    if stage_rules.get("prefer_review_model", False) and item.get("type") == "model_conflict":
+        return "优先参考Qwen；如果source_excerpt明显不支持，再手工修正"
+    if item.get("type") == "stage_node_check":
+        return "只按本节点判断；不要合并整套聊天"
+    return ""
+
+
 def review_question(item: dict[str, Any], case_card: dict[str, Any]) -> str:
     item_type = str(item.get("type", ""))
     field = str(item.get("field", ""))
     mapping = case_card.get("qingsheng_mapping", {})
     stage_judgment = mapping.get("stage_judgment", {}) if isinstance(mapping.get("stage_judgment"), dict) else {}
+    if item_type == "stage_node_check":
+        return (
+            "请只判断这个节点附近处于哪个阶段，或它是不是局部穿插信号。"
+            "如果只是局部穿插，请在 corrected_value 写如：阶段4，穿插6；"
+            "如果模型把成功结果倒推过头，也请直接写更合理的节点阶段。"
+        )
     if "stage_judgment" in field or field in {"qingsheng_mapping.stage_number", "qingsheng_mapping.stage_label"}:
         return (
             "请判断这组阶段证据/当前策略判断点的阶段是否合理，不是给整套聊天只定一个阶段。当前："
@@ -918,6 +1018,8 @@ def review_question(item: dict[str, Any], case_card: dict[str, Any]) -> str:
 def review_suggested_format(item: dict[str, Any]) -> str:
     field = str(item.get("field", ""))
     item_type = str(item.get("type", ""))
+    if item_type == "stage_node_check":
+        return "示例：阶段4；或 阶段4，穿插6；或 不是阶段判断节点"
     if "stage_range" in field or item_type == "overwide_stage_range":
         return "示例：[3,4]"
     if "stage_number" in field or "stage_judgment" in field or item_type == "stage7_evidence_check":
@@ -1271,7 +1373,7 @@ def write_manifest(output_dir: Path, batch_id: str, rows: list[dict[str, Any]]) 
 
 
 def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dict[str, Any]) -> None:
-    write_human_review_index(path.with_name("human_review_index.json"), rows)
+    write_human_review_index(path.with_name(f"{path.stem}_index.json"), rows)
     wb = Workbook()
     ws = wb.active
     ws.title = "human_review"
@@ -1333,7 +1435,7 @@ def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dic
 
 
 def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dict[str, Any]) -> None:
-    write_human_review_index(path.with_name("human_review_index.json"), rows)
+    write_human_review_index(path.with_name(f"{path.stem}_index.json"), rows)
     wb = Workbook()
     ws = wb.active
     ws.title = "human_review"
@@ -1361,6 +1463,7 @@ def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dic
         "source_excerpt": 70,
         "deepseek_value": 45,
         "qwen_value": 45,
+        "recommended_choice": 34,
         "why_uncertain": 45,
         "impact_if_wrong": 45,
         "your_choice": 18,
@@ -1398,13 +1501,14 @@ def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dic
         ("source_excerpt", "关键 turn 附近上下文。优先看这里；不够再打开 source_images 或原文件。"),
         ("deepseek_value", "DeepSeek 主判断或对应字段值。"),
         ("qwen_value", "Qwen 复核意见或对应字段值。"),
+        ("recommended_choice", "系统给你的默认参考方向。当前人工反馈显示 Qwen 正确率更高，所以模型冲突时会优先提示参考 Qwen，但你仍可手工修正。"),
         ("why_uncertain", "为什么这条进入复核。"),
         ("impact_if_wrong", "如果这项错了，会影响什么。"),
         ("your_choice", "下拉选择。确认DeepSeek/确认Qwen/手工修正/标记为不确定/跳过。"),
         ("corrected_value", "你修正后的最终答案。不是改表头，也不是解释字段名。比如阶段范围填 [3,4]；gold 填 turn_id：原句；如果只是同意模型，这列可以留空。"),
         ("notes", "你的补充说明。"),
         ("status", "处理状态，可留空或保持 pending。"),
-        ("阶段填写示例", "主阶段3，策略阶段4，范围[3,4]。这里指当前证据片段/策略判断点，不是整套完整聊天只能有一个阶段。"),
+        ("阶段节点填写示例", "阶段4；或 阶段4，穿插6；或 不是阶段判断节点。这里指当前这一行的单个节点，不是整套聊天，也不是多个节点混在一起。"),
         ("gold填写示例", "turn_0123：我们之间没有别人。优先原案例真实有效回复，不要选纯刺激但不可迁移的句子。"),
     ]
     for guide_row in guide_rows:
