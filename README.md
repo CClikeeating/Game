@@ -1,5 +1,29 @@
 # Baiou Case Workflow
 
+## 新版 MVP 工作入口
+
+当前新版 MVP 改造请先进入 `workV/` 新工作区，不要直接在旧 `workflow/` 上继续改产品逻辑。
+
+协作和后续开发默认顺序：
+
+1. 先阅读 `workV/README.md`。
+2. 新功能优先放在 `workV/` 下。
+3. 旧 `workflow/` 只作为可复用来源：管道1整案输出、管道2双模型复核机制、管道3资产导出思路、旧截图能力。
+4. 不要把旧 7 阶段体系、旧 `case_card` schema、旧 `qingsheng-skill` 长 Prompt、旧百炼 `file_search` 默认混进新版 v0.1。
+5. 新版默认流程是：旧管道1整案 -> `workV` 拆 `segments_v01` -> xlsx 人工复核 -> approved segments -> 本地片段索引/片段资产 -> 文本或截图回复测试台。
+
+常用入口：
+
+```powershell
+# 查看新版说明
+Get-Content workV/README.md
+
+# 启动新版本地测试台
+python -m workV.web.serve
+```
+
+下面是旧项目原说明，保留用于理解历史管道和复用边界。
+
 这个项目把聊天素材加工成 `qingsheng-skill` 可用的案例、测试题和经验包。
 
 ## 目录结构

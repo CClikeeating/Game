@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shutil
 from pathlib import Path
 from typing import Callable
+
+from workflow.common.io import ensure_overwrite_allowed
+from workflow.common.io import write_json as write_json_file
 
 from .adapters import prepare_html, prepare_image_folder, prepare_long_image, prepare_pdf
 from .config_loader import PROJECT_ROOT, ROOT
@@ -18,8 +20,7 @@ SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 
 
 def write_json(path: Path, data: object) -> None:
-    ensure_dir(path.parent)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def choose_adapter(source_type: str) -> Callable:
@@ -51,7 +52,7 @@ def blocks_to_payload(blocks: list[SourceBlock]) -> dict:
     }
 
 
-def prepare(source_type: str, input_path: Path, run_id: str | None = None) -> Path:
+def prepare(source_type: str, input_path: Path, run_id: str | None = None, overwrite: bool = False) -> Path:
     source_id = safe_source_id(input_path, run_id)
     output_dir = RUNS_ROOT / source_id
     runs_root = RUNS_ROOT.resolve()
@@ -59,6 +60,7 @@ def prepare(source_type: str, input_path: Path, run_id: str | None = None) -> Pa
     if not resolved_output.is_relative_to(runs_root):
         raise ValueError(f"Unsafe output directory: {output_dir}")
     if output_dir.exists():
+        ensure_overwrite_allowed(output_dir, overwrite)
         shutil.rmtree(output_dir)
     ensure_dir(output_dir)
 
@@ -75,8 +77,9 @@ def main() -> None:
     parser.add_argument("source_type", choices=["html", "pdf", "long_image", "image", "folder", "image_folder"])
     parser.add_argument("input_path")
     parser.add_argument("--run-id")
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    output_dir = prepare(args.source_type, Path(args.input_path), args.run_id)
+    output_dir = prepare(args.source_type, Path(args.input_path), args.run_id, args.overwrite)
     print(output_dir)
 
 

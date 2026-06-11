@@ -1,0 +1,186 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>workV 回复测试台</title>
+  <style>
+    :root { --bg:#f6f8fb; --panel:#fff; --ink:#172033; --muted:#697386; --line:#dbe2ee; --accent:#176b5d; --warn:#a45b00; --bad:#b42318; --radius:8px; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+    .shell { max-width:1440px; margin:0 auto; padding:24px; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:16px; }
+    h1 { margin:0; font-size:24px; letter-spacing:0; }
+    .sub { margin:6px 0 0; color:var(--muted); font-size:13px; }
+    .layout { display:grid; grid-template-columns:minmax(340px,460px) minmax(0,1fr); gap:16px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); }
+    .panel h2 { margin:0; padding:16px 16px 0; font-size:16px; }
+    form, .result { padding:16px; }
+    label { display:block; margin:0 0 7px; font-size:13px; font-weight:700; color:#334155; }
+    textarea, input[type="text"] { width:100%; border:1px solid var(--line); border-radius:8px; padding:11px; background:#fbfcff; font:inherit; font-size:14px; resize:vertical; }
+    textarea:focus, input[type="text"]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(23,107,93,.12); background:#fff; }
+    .field { margin-bottom:15px; }
+    .hint { margin-top:7px; color:var(--muted); font-size:12px; line-height:1.5; }
+    .upload { border:1px dashed #b8c4d8; border-radius:8px; padding:13px; background:#f9fbff; }
+    .actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    button { border:0; border-radius:8px; min-height:40px; padding:0 16px; background:var(--accent); color:white; font-weight:750; cursor:pointer; }
+    button.secondary { background:#eef4f2; color:#155448; border:1px solid #c9ded8; }
+    .dry { color:var(--muted); font-size:13px; display:inline-flex; align-items:center; gap:7px; }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:12px; }
+    .metric { border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcff; }
+    .metric span { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
+    .metric strong { font-size:14px; overflow-wrap:anywhere; }
+    .answer { border:1px solid #c9ded8; background:#f7fcfa; border-radius:8px; padding:15px; white-space:pre-wrap; line-height:1.7; font-size:15px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
+    .box { border:1px solid var(--line); border-radius:8px; padding:12px; background:#fff; min-height:92px; }
+    .box h3 { margin:0 0 8px; font-size:13px; }
+    pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-family:inherit; font-size:13px; line-height:1.55; max-height:320px; overflow:auto; }
+    .refs { display:grid; gap:10px; margin-top:12px; }
+    .ref { border:1px solid var(--line); border-radius:8px; padding:12px; background:#fbfcff; }
+    .ref-title { display:flex; justify-content:space-between; gap:12px; font-size:13px; font-weight:750; margin-bottom:7px; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+    .chip { border:1px solid #c9ded8; background:#f2faf7; color:#155448; border-radius:999px; padding:4px 8px; font-size:12px; }
+    .error { border-color:#ffccc7; background:#fff1f0; color:var(--bad); }
+    .feedback { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
+    .feedback input { flex:1; min-width:220px; border:1px solid var(--line); border-radius:8px; padding:10px; }
+    .table { width:100%; border-collapse:collapse; font-size:13px; }
+    .table th, .table td { border-bottom:1px solid var(--line); padding:8px 7px; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+    .table th { color:#334155; background:#f8fbff; font-weight:750; }
+    @media (max-width: 960px) { .shell{padding:14px;} header{align-items:flex-start; flex-direction:column;} .layout,.grid{grid-template-columns:1fr;} .metrics{grid-template-columns:repeat(2,minmax(0,1fr));} }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>workV 回复测试台</h1>
+        <p class="sub">文本/截图输入 -> 标签判断 -> 本地片段检索 -> 回复建议。</p>
+      </div>
+      <div class="sub">本地片段知识库优先，外部 file_search 默认不参与。</div>
+    </header>
+    <main class="layout">
+      <section class="panel">
+        <h2>输入</h2>
+        <form method="post" action="/run" enctype="multipart/form-data" id="runForm">
+          <div class="field">
+            <label for="question">当前聊天 / 用户问题</label>
+            <textarea id="question" name="question" rows="6" required placeholder="粘贴当前聊天，或写：她说 xxx，我该怎么回？">{{ form.question }}</textarea>
+          </div>
+          <div class="field">
+            <label for="context">补充背景</label>
+            <textarea id="context" name="context" rows="4" placeholder="例如：微信认识三天，还没见面，之前聊得正常。">{{ form.context }}</textarea>
+          </div>
+          <div class="field">
+            <label for="index_path">片段索引路径</label>
+            <input id="index_path" name="index_path" type="text" value="{{ form.index_path }}" placeholder="默认 workV/outputs/indexes/segments_index.jsonl">
+            <div class="hint">可以留空使用默认本地索引；dry-run 可在没有模型调用时检查标签和检索。</div>
+          </div>
+          <div class="field">
+            <label for="images">聊天截图</label>
+            <div class="upload"><input id="images" name="images" type="file" accept="image/*" multiple></div>
+          </div>
+          <div class="actions">
+            <label class="dry"><input type="checkbox" name="dry_run" {% if form.dry_run %}checked{% endif %}> dry-run</label>
+            <button type="submit" id="submitBtn">运行</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>结果</h2>
+        {% if result %}
+        <div class="result">
+          <div class="metrics">
+            <div class="metric"><span>状态</span><strong>{{ result.status }}</strong></div>
+            <div class="metric"><span>图片</span><strong>{{ result.images|length }} 张</strong></div>
+            <div class="metric"><span>参考片段</span><strong>{{ result.reference_segments|length }} 条</strong></div>
+            <div class="metric"><span>run</span><strong>{{ result.run_id }}</strong></div>
+          </div>
+          {% if result.error %}<div class="box error"><h3>错误</h3><pre>{{ result.error }}</pre></div>{% endif %}
+          <label>推荐回复</label>
+          <div class="answer">{{ result.answer.reply or "暂无回复" }}</div>
+          <div class="grid">
+            <div class="box"><h3>教练分析</h3><pre>{{ result.answer.coach_analysis or "无" }}</pre></div>
+            <div class="box"><h3>下一步建议</h3><pre>{{ result.answer.next_step or "无" }}</pre></div>
+            <div class="box"><h3>基础标签</h3><pre>{{ result.labels_json }}</pre></div>
+            <div class="box"><h3>风险提醒</h3><pre>{{ result.answer.risk_warning or "无" }}</pre></div>
+          </div>
+          {% if result.image_understanding %}
+          <div class="box" style="margin-top:12px;"><h3>截图理解</h3><pre>{{ result.image_understanding }}</pre></div>
+          {% endif %}
+          <div class="box" style="margin-top:12px;">
+            <h3>模型耗时与 token</h3>
+            {% if result.model_metrics %}
+            <table class="table">
+              <thead><tr><th>环节</th><th>模型</th><th>状态</th><th>耗时</th><th>token</th></tr></thead>
+              <tbody>
+                {% for item in result.model_metrics %}
+                <tr>
+                  <td>{{ item.label }}</td>
+                  <td>{{ item.model }}</td>
+                  <td>{{ item.status }}</td>
+                  <td>{{ item.elapsed_seconds }}{% if item.elapsed_seconds != "" %} 秒{% endif %}</td>
+                  <td>{{ item.tokens }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <pre>暂无模型耗时/token 数据。dry-run 不调用模型。</pre>
+            {% endif %}
+          </div>
+          <h3 style="margin:16px 0 8px;font-size:14px;">参考相似片段</h3>
+          <div class="refs">
+            {% for ref in result.reference_segments %}
+            <div class="ref">
+              <div class="ref-title"><span>{{ ref.segment_id }}</span><span>score={{ ref.score }}</span></div>
+              <div class="chips">
+                {% for key, value in ref.labels.items() %}<span class="chip">{{ key }}: {{ value }}</span>{% endfor %}
+                {% for key, value in ref.secondary_labels.items() %}{% if value %}<span class="chip">次要{{ key }}: {{ value }}</span>{% endif %}{% endfor %}
+              </div>
+              <pre>女生最后一句：{{ ref["女生最后一句"] }}
+男生原回复：{{ ref["男生原回复"] }}
+建议回复：{{ ref["更优回复"] }}
+下一步建议：{{ ref["下一步建议"] }}
+命中原因：{{ ref.match_reasons }}</pre>
+            </div>
+            {% else %}
+            <div class="box"><pre>没有检索到参考片段。请先构建 approved segments 索引，或使用 dry-run 检查路径。</pre></div>
+            {% endfor %}
+          </div>
+          <div class="feedback" data-summary="{{ result.summary_path }}">
+            <button class="secondary" type="button" data-rating="有用">有用</button>
+            <button class="secondary" type="button" data-rating="一般">一般</button>
+            <button class="secondary" type="button" data-rating="不合适">不合适</button>
+            <input type="text" id="feedbackNotes" placeholder="备注，可选">
+            <span id="feedbackStatus" class="sub"></span>
+          </div>
+          <div class="grid">
+            <div class="box"><h3>Summary</h3><pre>{{ result.summary_path }}</pre></div>
+            <div class="box"><h3>Raw Debug</h3><pre>{{ result.raw_result_json }}</pre></div>
+          </div>
+        </div>
+        {% else %}
+        <div class="result"><div class="box"><pre>还没有运行结果。</pre></div></div>
+        {% endif %}
+      </section>
+    </main>
+  </div>
+  <script>
+    const form = document.getElementById('runForm');
+    const btn = document.getElementById('submitBtn');
+    form.addEventListener('submit', () => { btn.disabled = true; btn.textContent = '运行中...'; });
+    document.querySelectorAll('.feedback button').forEach(button => {
+      button.addEventListener('click', async () => {
+        const wrap = button.closest('.feedback');
+        const notes = document.getElementById('feedbackNotes').value;
+        const status = document.getElementById('feedbackStatus');
+        const res = await fetch('/feedback', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ summary_path: wrap.dataset.summary, rating: button.dataset.rating, notes }) });
+        status.textContent = res.ok ? '已记录' : '记录失败';
+      });
+    });
+  </script>
+</body>
+</html>
+
+
+

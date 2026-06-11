@@ -1,0 +1,15 @@
+﻿{
+  "default_index": "workV/outputs/indexes/segments_index.jsonl",
+  "top_k": 3,
+  "min_score": 1,
+  "approved_only": true,
+  "weights": {
+    "聊天阶段": 8,
+    "女生状态": 7,
+    "男生目标": 6,
+    "推荐策略": 5,
+    "回复强度": 3,
+    "风险类型": 4,
+    "token": 1
+  }
+}

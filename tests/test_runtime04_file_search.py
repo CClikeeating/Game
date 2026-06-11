@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from workflow.qingsheng_skill_runtime04.model_client import RuntimeModelClient
 
@@ -15,13 +14,32 @@ class FakeResponse:
         return json.dumps(
             {
                 "output_text": "可以这样回。",
-                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "可以这样回。",
+                                "annotations": [
+                                    {
+                                        "type": "file_citation",
+                                        "file_id": "file_001",
+                                        "filename": "case_001.md",
+                                        "quote": "相似案例片段",
+                                        "score": 0.91,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ],
             },
             ensure_ascii=False,
         ).encode("utf-8")
 
 
-def test_file_search_client_uses_responses_api(monkeypatch) -> None:
+def test_file_search_client_uses_responses_api_and_extracts_references(monkeypatch) -> None:
     captured = {}
 
     def fake_urlopen(request, timeout):
@@ -45,10 +63,13 @@ def test_file_search_client_uses_responses_api(monkeypatch) -> None:
             "temperature": 0.2,
             "timeout_seconds": 180,
             "max_tokens": 5000,
+            "enable_thinking": False,
             "file_search": {
                 "enabled": True,
                 "vector_store_ids": ["vc8y71trwg"],
                 "max_num_results": 3,
+                "include_results": True,
+                "tool_choice": "required",
             },
         },
         "51",
@@ -58,10 +79,15 @@ def test_file_search_client_uses_responses_api(monkeypatch) -> None:
 
     assert result["status"] == "model_success"
     assert result["raw_text"] == "可以这样回。"
+    assert result["references"][0]["filename"] == "case_001.md"
+    assert result["references"][0]["text"] == "相似案例片段"
     assert captured["url"].endswith("/responses")
     assert captured["payload"]["instructions"] == "skill prompt"
     assert captured["payload"]["input"] == "用户问题"
     assert captured["payload"]["user_id"] == "51"
+    assert captured["payload"]["include"] == ["file_search_call.results"]
+    assert captured["payload"]["tool_choice"] == "required"
+    assert captured["payload"]["enable_thinking"] is False
     assert captured["payload"]["tools"] == [
         {
             "type": "file_search",

@@ -4,6 +4,7 @@
     "user_id_strategy": "worker_index",
     "user_id_start": 1,
     "user_id_prefix": "",
-    "fail_fast": false
+    "fail_fast": false,
+    "overwrite": false
   }
 }

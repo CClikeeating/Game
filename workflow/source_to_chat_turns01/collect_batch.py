@@ -2,25 +2,28 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import shutil
 from pathlib import Path
 from typing import Any
 
+from workflow.common.io import PROJECT_ROOT
+from workflow.common.io import ensure_overwrite_allowed
+from workflow.common.io import read_json as read_json_file
+from workflow.common.io import write_json as write_json_file
 
-OUTPUT_ROOT = Path("outputs/source_to_chat_turns01")
+
+OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "source_to_chat_turns01"
 PREPARED_ROOT = OUTPUT_ROOT / "_prepared_sources"
 CASE_RUNS_ROOT = OUTPUT_ROOT / "_case_runs"
 DEFAULT_DEFER_FAILED_GROUPS_GT = 1
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def rewrite_case_image_paths(payload: Any, target_root: Path) -> Any:
@@ -48,9 +51,10 @@ def failure_blocks(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return failures
 
 
-def collect(batch_id: str, case_ids: list[str], defer_failed_groups_gt: int) -> Path:
+def collect(batch_id: str, case_ids: list[str], defer_failed_groups_gt: int, overwrite: bool = False) -> Path:
     batch_dir = OUTPUT_ROOT / "batches" / batch_id
     if batch_dir.exists():
+        ensure_overwrite_allowed(batch_dir, overwrite)
         shutil.rmtree(batch_dir)
     (batch_dir / "cases").mkdir(parents=True, exist_ok=True)
     (batch_dir / "deferred_cases").mkdir(parents=True, exist_ok=True)
@@ -161,8 +165,9 @@ def main() -> None:
     parser.add_argument("batch_id")
     parser.add_argument("case_ids", nargs="+")
     parser.add_argument("--defer-failed-groups-gt", type=int, default=DEFAULT_DEFER_FAILED_GROUPS_GT)
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    print(collect(args.batch_id, args.case_ids, args.defer_failed_groups_gt))
+    print(collect(args.batch_id, args.case_ids, args.defer_failed_groups_gt, args.overwrite))
 
 
 if __name__ == "__main__":

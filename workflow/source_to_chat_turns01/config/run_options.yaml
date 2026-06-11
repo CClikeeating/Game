@@ -7,6 +7,7 @@
     "mode": "group",
     "limit": null,
     "defer_failed_groups_gt": 1,
-    "fail_fast": false
+    "fail_fast": false,
+    "overwrite": false
   }
 }

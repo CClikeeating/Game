@@ -1,0 +1,23 @@
+{
+  "output": {
+    "root": "segment_assets"
+  },
+  "learning_cases": {
+    "directory": "learning_cases",
+    "json_filename": "segment_cases_index.json",
+    "jsonl_filename": "segment_cases_index.jsonl"
+  },
+  "experience_pack": {
+    "directory": "experience_pack",
+    "json_filename": "segment_experience_pack.json",
+    "jsonl_filename": "segment_experience_pack.jsonl"
+  },
+  "rag_knowledge_base": {
+    "directory": "rag_knowledge_base",
+    "segments_directory": "segments",
+    "index_filename": "segments_index.jsonl",
+    "manifest_filename": "upload_manifest.csv",
+    "summary_filename": "rag_build_summary.json",
+    "max_text_chars": 1200
+  }
+}

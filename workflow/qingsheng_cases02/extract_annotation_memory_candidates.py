@@ -7,6 +7,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from workflow.common.io import read_json
+
 from .config_loader import write_json
 
 
@@ -25,7 +27,7 @@ def read_review_rows(xlsx_path: Path) -> list[dict[str, Any]]:
 def read_index(index_path: Path) -> dict[str, dict[str, Any]]:
     if not index_path.exists():
         return {}
-    data = json.loads(index_path.read_text(encoding="utf-8-sig"))
+    data = read_json(index_path)
     return {str(row.get("review_id", "")): row for row in data.get("rows", [])}
 
 

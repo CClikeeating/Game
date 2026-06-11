@@ -109,6 +109,12 @@ class RuntimeModelClient:
             "max_output_tokens": self.config.get("max_tokens", 5000),
             "user_id": str(self.user_id),
         }
+        if file_search.get("include_results", False):
+            payload["include"] = ["file_search_call.results"]
+        if file_search.get("tool_choice"):
+            payload["tool_choice"] = str(file_search["tool_choice"])
+        if "enable_thinking" in self.config:
+            payload["enable_thinking"] = bool(self.config["enable_thinking"])
         url = str(self.config["base_url"]).rstrip("/") + "/responses"
         request = urllib.request.Request(
             url,
@@ -126,7 +132,15 @@ class RuntimeModelClient:
             return self._result("model_call_failed", exc.__class__.__name__, "", {}, started)
 
         raw_text = extract_response_text(data)
-        return self._result("model_success", "", raw_text, data.get("usage", {}), started)
+        return self._result(
+            "model_success",
+            "",
+            raw_text,
+            data.get("usage", {}),
+            started,
+            references=extract_response_references(data),
+            response_debug=summarize_response(data),
+        )
 
     def _result(
         self,
@@ -135,6 +149,8 @@ class RuntimeModelClient:
         raw_text: str,
         usage: dict[str, Any],
         started: float,
+        references: list[dict[str, Any]] | None = None,
+        response_debug: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "client": self.name,
@@ -146,6 +162,8 @@ class RuntimeModelClient:
             "elapsed_seconds": round(time.time() - started, 2),
             "raw_text": raw_text,
             "usage": usage,
+            "references": references or [],
+            "response_debug": response_debug or {},
         }
 
 
@@ -168,3 +186,87 @@ def extract_response_text(data: dict[str, Any]) -> str:
             if text:
                 chunks.append(str(text))
     return "\n".join(chunks).strip()
+
+
+def extract_response_references(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Best-effort extraction for file-search citations across compatible APIs."""
+    references: list[dict[str, Any]] = []
+    for item in walk_dicts(data):
+        if not looks_like_reference(item):
+            continue
+        references.append(
+            {
+                "file_id": item.get("file_id") or item.get("fileId") or item.get("id") or "",
+                "filename": item.get("filename") or item.get("file_name") or item.get("title") or item.get("name") or "",
+                "score": item.get("score") or item.get("rank_score") or item.get("similarity") or "",
+                "text": trim_text(
+                    item.get("text")
+                    or item.get("content")
+                    or item.get("quote")
+                    or item.get("snippet")
+                    or item.get("summary")
+                    or "",
+                    600,
+                ),
+                "type": item.get("type") or item.get("annotation_type") or "",
+            }
+        )
+    return dedupe_references(references)
+
+
+def summarize_response(data: dict[str, Any]) -> dict[str, Any]:
+    output = data.get("output", [])
+    output_types = []
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, dict):
+                output_types.append(
+                    {
+                        "type": item.get("type", ""),
+                        "status": item.get("status", ""),
+                        "keys": sorted(item.keys()),
+                    }
+                )
+    return {
+        "top_level_keys": sorted(data.keys()),
+        "output_types": output_types,
+        "raw_preview": trim_text(json.dumps(data, ensure_ascii=False), 8000),
+    }
+
+
+def walk_dicts(value: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        found.append(value)
+        for child in value.values():
+            found.extend(walk_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(walk_dicts(child))
+    return found
+
+
+def looks_like_reference(item: dict[str, Any]) -> bool:
+    keys = set(item)
+    if {"file_id", "filename"} & keys:
+        return True
+    if {"file_name", "quote"} & keys:
+        return True
+    return item.get("type") in {"file_citation", "file_search_result", "citation"}
+
+
+def dedupe_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        key = (str(item.get("file_id", "")), str(item.get("filename", "")), str(item.get("text", ""))[:120])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result[:20]
+
+
+def trim_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= max_chars else text[:max_chars] + "\n...[truncated]"

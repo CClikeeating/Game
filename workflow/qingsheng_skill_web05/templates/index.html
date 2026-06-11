@@ -117,6 +117,9 @@
       border-radius: 9px;
       padding: 5px;
     }
+    .mode-group.answer-style {
+      grid-template-columns: repeat(4, 1fr);
+    }
     .mode-option input { display: none; }
     .mode-option span {
       display: block;
@@ -271,6 +274,26 @@
       max-height: 260px;
       overflow: auto;
     }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .table th, .table td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 7px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .table th {
+      color: #334155;
+      background: #f8fbff;
+      font-weight: 750;
+    }
+    .wide-box {
+      min-height: 80px;
+    }
     .error {
       color: #b42318;
       background: #fff1f0;
@@ -324,6 +347,19 @@
           </div>
 
           <div class="field">
+            <label>回复模式</label>
+            <div class="mode-group answer-style">
+              {% for style, title in [("simple", "简短"), ("coach", "教练"), ("analysis", "复盘"), ("autopilot", "自动发送")] %}
+              <label class="mode-option">
+                <input type="radio" name="answer_style" value="{{ style }}" {% if form.answer_style == style %}checked{% endif %}>
+                <span>{{ title }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            <div class="hint">控制最终回复的长短和形态；按钮会进入 runtime prompt，不只是页面展示。</div>
+          </div>
+
+          <div class="field">
             <label for="images">聊天截图</label>
             <div class="upload-box">
               <input id="images" name="images" type="file" accept="image/*" multiple>
@@ -351,6 +387,7 @@
           <div class="metrics">
             <div class="metric"><span>状态</span><strong>{{ result.status }}</strong></div>
             <div class="metric"><span>模式</span><strong>{{ result.mode }}</strong></div>
+            <div class="metric"><span>回复模式</span><strong>{{ result.answer_style }}</strong></div>
             <div class="metric"><span>耗时</span><strong>{{ result.elapsed_seconds }} 秒</strong></div>
             <div class="metric"><span>图片</span><strong>{{ result.images|length }} 张</strong></div>
           </div>
@@ -375,10 +412,82 @@
             </div>
           </div>
 
+          <div class="box wide-box">
+            <h3>模型耗时与 token</h3>
+            {% if result.model_metrics %}
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>环节</th>
+                  <th>模型</th>
+                  <th>状态</th>
+                  <th>耗时</th>
+                  <th>user_id</th>
+                  <th>token</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in result.model_metrics %}
+                <tr>
+                  <td>{{ item.label }}</td>
+                  <td>{{ item.model or item.client }}</td>
+                  <td>{{ item.status }}</td>
+                  <td>{{ item.elapsed_seconds }} 秒</td>
+                  <td>{{ item.user_id }}</td>
+                  <td>{{ item.tokens }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <pre>暂无模型耗时/token 数据</pre>
+            {% endif %}
+          </div>
+
+          <div class="box wide-box">
+            <h3>RAG 知识库引用</h3>
+            {% if result.rag_references %}
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>文件/案例</th>
+                  <th>分数</th>
+                  <th>引用片段</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for ref in result.rag_references %}
+                <tr>
+                  <td>{{ ref.filename or ref.file_id or "未返回文件名" }}</td>
+                  <td>{{ ref.score }}</td>
+                  <td>{{ ref.text or ref.type }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <pre>模型本次没有返回可解析的知识库引用。仍可在 Prompt 内容里查看是否启用了 RAG 和知识库路径。</pre>
+            {% endif %}
+          </div>
+
           <div class="subgrid">
             <div class="box">
-              <h3>Prompt Preview</h3>
-              <pre>{{ result.prompt_preview }}</pre>
+              <h3>User Prompt</h3>
+              <pre>{{ result.prompt_preview_data.user_prompt if result.prompt_preview_data else result.prompt_preview }}</pre>
+            </div>
+            <div class="box">
+              <h3>System Prompt 预览</h3>
+              <pre>{{ result.prompt_preview_data.system_prompt_preview if result.prompt_preview_data else "无" }}</pre>
+            </div>
+          </div>
+
+          <div class="subgrid">
+            <div class="box">
+              <h3>Prompt 元信息</h3>
+              <pre>prompt: {{ result.prompt_preview }}
+system_chars: {{ result.prompt_preview_data.system_prompt_chars if result.prompt_preview_data else "" }}
+answer_style: {{ result.prompt_preview_data.answer_style if result.prompt_preview_data else result.answer_style }}
+image_understanding: {{ result.prompt_preview_data.image_understanding if result.prompt_preview_data else "" }}</pre>
             </div>
             <div class="box">
               <h3>Result / Summary</h3>

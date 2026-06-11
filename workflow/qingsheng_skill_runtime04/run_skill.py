@@ -7,10 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from workflow.common.io import PROJECT_ROOT as ROOT
+from workflow.common.io import read_json as read_json_file
+from workflow.common.io import read_text as read_text_file
+from workflow.common.io import resolve_path as resolve_project_path
+from workflow.common.io import write_json as write_json_file
+
 from .model_client import RuntimeModelClient
 
 
-ROOT = Path.cwd()
 CONFIG_ROOT = ROOT / "workflow" / "qingsheng_skill_runtime04" / "config"
 
 
@@ -21,6 +26,7 @@ def run_skill(
     batch_id: str | None = None,
     experience_pack: str | None = None,
     mode: str | None = None,
+    answer_style: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     runtime = read_json(CONFIG_ROOT / "runtime.json")
@@ -29,11 +35,12 @@ def run_skill(
     image_paths = [resolve_path(path) for path in (images or [])]
     validate_images(image_paths)
     runtime_mode = normalize_mode(mode or runtime.get("mode", {}).get("default", "rag"))
+    answer_style = normalize_answer_style(answer_style, runtime)
 
     skill_prompt = build_system_prompt(runtime)
     selected_cases = retrieve_cases(question, context, runtime, experience_pack)
     image_understanding = ""
-    user_prompt = build_user_prompt(question, context, selected_cases, image_paths, runtime)
+    user_prompt = build_user_prompt(question, context, selected_cases, image_paths, runtime, answer_style=answer_style)
 
     output_root = resolve_path(runtime["output"]["root"]) / batch_id
     output_root.mkdir(parents=True, exist_ok=True)
@@ -42,13 +49,14 @@ def run_skill(
     result_path = output_root / f"{run_id}_result.json"
 
     if dry_run:
-        write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode)
+        write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode, answer_style, runtime)
         result = {
             "status": "dry_run",
             "answer": "",
             "model_result": {},
             "vision_result": {},
             "mode": runtime_mode,
+            "answer_style": answer_style,
             "prompt_preview": str(prompt_path),
             "result_path": str(result_path),
         }
@@ -65,10 +73,11 @@ def run_skill(
             "model_result": model_result,
             "vision_result": model_result,
             "mode": runtime_mode,
+            "answer_style": answer_style,
             "prompt_preview": str(prompt_path),
             "result_path": str(result_path),
         }
-        write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode)
+        write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode, answer_style, runtime)
         write_json(result_path, result)
         return result
 
@@ -87,9 +96,10 @@ def run_skill(
             [],
             runtime,
             image_understanding=image_understanding,
+            answer_style=answer_style,
         )
 
-    write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode)
+    write_prompt_preview(prompt_path, question, context, image_paths, selected_cases, skill_prompt, user_prompt, image_understanding, runtime_mode, answer_style, runtime)
     client = RuntimeModelClient("text_model", models["text_model"], str(models.get("user_id", "0")))
     model_result = client.chat(skill_prompt, user_prompt, [])
     result = {
@@ -98,6 +108,7 @@ def run_skill(
         "model_result": model_result,
         "vision_result": vision_result,
         "mode": runtime_mode,
+        "answer_style": answer_style,
         "prompt_preview": str(prompt_path),
         "result_path": str(result_path),
     }
@@ -115,7 +126,10 @@ def write_prompt_preview(
     user_prompt: str,
     image_understanding: str,
     mode: str,
+    answer_style: str,
+    runtime: dict[str, Any],
 ) -> None:
+    preview_chars = int(runtime.get("answer_style", {}).get("prompt_preview_chars", 12000))
     write_json(
         prompt_path,
         {
@@ -123,9 +137,11 @@ def write_prompt_preview(
             "context": context,
             "images": [str(path) for path in image_paths],
             "mode": mode,
+            "answer_style": answer_style,
             "image_understanding": image_understanding,
             "selected_cases": selected_cases,
             "system_prompt_chars": len(skill_prompt),
+            "system_prompt_preview": trim(skill_prompt, preview_chars),
             "user_prompt": user_prompt,
         },
     )
@@ -138,6 +154,14 @@ def normalize_mode(value: str) -> str:
     if mode in {"fast", "rag"}:
         return mode
     return "rag"
+
+
+def normalize_answer_style(value: str | None, runtime: dict[str, Any]) -> str:
+    cfg = runtime.get("answer_style", {}) if isinstance(runtime.get("answer_style"), dict) else {}
+    default = str(cfg.get("default", "coach"))
+    modes = cfg.get("modes", {}) if isinstance(cfg.get("modes"), dict) else {}
+    style = str(value or default).strip().lower()
+    return style if style in modes else default
 
 
 def build_system_prompt(runtime: dict[str, Any]) -> str:
@@ -170,6 +194,7 @@ def build_user_prompt(
     image_paths: list[Path],
     runtime: dict[str, Any],
     image_understanding: str = "",
+    answer_style: str = "coach",
 ) -> str:
     parts = [
         "用户问题：",
@@ -193,10 +218,22 @@ def build_user_prompt(
         parts.append("\n可参考的经验案例（只作为参考，不要机械套用）：")
         for case in selected_cases:
             parts.append(format_case(case, int(runtime["experience"]["max_case_chars"])))
+    style_instruction = get_answer_style_instruction(runtime, answer_style)
+    if style_instruction:
+        parts.extend(["\n本次回复模式：", f"{answer_style} - {style_instruction}"])
     parts.append(
         "\n回答要求：先解决用户当下问题。需要话术时给可直接复制发送的中文。默认短、准、像真人，不要写成分析报告；如果是 /自动，第一行必须是 [发送]。"
     )
     return "\n".join(parts)
+
+
+def get_answer_style_instruction(runtime: dict[str, Any], answer_style: str) -> str:
+    cfg = runtime.get("answer_style", {}) if isinstance(runtime.get("answer_style"), dict) else {}
+    modes = cfg.get("modes", {}) if isinstance(cfg.get("modes"), dict) else {}
+    value = modes.get(answer_style, "")
+    if isinstance(value, dict):
+        return str(value.get("instruction", ""))
+    return str(value)
 
 
 def build_image_understanding_system_prompt() -> str:
@@ -217,6 +254,7 @@ def build_image_understanding_prompt(question: str, context: str) -> str:
         "5. 适合用于案例知识库检索的关键词。",
         "",
         "微信气泡默认规则：右侧绿色气泡=男方/用户；左侧白色气泡=女方/对方；系统时间/提示=系统；表情包按发送方归属标注。",
+        "如果用户问题或补充背景明确说明某句话是谁说的，除非图片中有非常明确的相反证据，否则优先保留用户说明，并在摘要中标注“按用户说明”。",
         "输出要简洁，保留原句，不要编造图片外内容。",
         f"用户问题：{question.strip()}",
     ]
@@ -294,21 +332,19 @@ def validate_images(paths: list[Path]) -> None:
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig")
+    return read_text_file(path)
 
 
 def resolve_path(path: str | Path) -> Path:
-    value = Path(path)
-    return value if value.is_absolute() else ROOT / value
+    return resolve_project_path(path)
 
 
 def trim(text: str, max_chars: int) -> str:
@@ -325,6 +361,7 @@ def main() -> None:
     parser.add_argument("--batch-id")
     parser.add_argument("--experience-pack")
     parser.add_argument("--mode", choices=["fast", "rag", "auto"], help="图片输入模式：fast 直接视觉回答；rag/auto 先视觉摘要再检索知识库。")
+    parser.add_argument("--answer-style", choices=["simple", "coach", "analysis", "autopilot"], help="回复模式：simple 简短话术；coach 默认教练；analysis 详细复盘；autopilot 第一行给可发送内容。")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     result = run_skill(
@@ -334,6 +371,7 @@ def main() -> None:
         batch_id=args.batch_id,
         experience_pack=args.experience_pack,
         mode=args.mode,
+        answer_style=args.answer_style,
         dry_run=args.dry_run,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

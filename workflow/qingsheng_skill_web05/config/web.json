@@ -1,0 +1,14 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 7860,
+    "debug": false
+  },
+  "upload": {
+    "max_content_mb": 24,
+    "allowed_image_extensions": [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+  },
+  "output": {
+    "root": "outputs/qingsheng_skill_web05"
+  }
+}

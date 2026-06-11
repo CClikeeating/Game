@@ -9,6 +9,9 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from workflow.common.io import read_json as read_json_file
+from workflow.common.io import write_json as write_json_file
+
 
 CHOICE_TO_SPEAKER = {
     "改为男生": "male",
@@ -56,11 +59,11 @@ SPEAKER_PREFIX = {
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def compact_marker(text: str) -> str:

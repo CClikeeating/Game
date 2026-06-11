@@ -9,6 +9,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from workflow.common.io import read_json as read_json_file
+
 
 FIELDS = [
     "review_id",
@@ -76,7 +78,7 @@ NARRATION_TRIGGERS = [
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def source_image_for_block(batch_dir: Path, case_dir: Path, case_id: str, block_id: str) -> str:

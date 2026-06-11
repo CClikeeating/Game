@@ -91,6 +91,7 @@ def run_case_plan(
     batch_id: str,
     max_workers: int | None = None,
     defer_failed_groups_gt: int | None = None,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     options = load_config("run_options.yaml").get("case_plan", {})
     if max_workers is not None:
@@ -98,6 +99,8 @@ def run_case_plan(
     options["max_workers"] = max(1, min(MAX_WORKERS_CAP, int(options.get("max_workers", 1))))
     if defer_failed_groups_gt is not None:
         options["defer_failed_groups_gt"] = defer_failed_groups_gt
+    if overwrite:
+        options["overwrite"] = True
 
     jobs = build_jobs(load_plan(Path(plan_path)), options)
     results: list[dict[str, Any]] = []
@@ -128,7 +131,12 @@ def run_case_plan(
             )
 
     case_ids = [result["case_id"] for result in sorted(results, key=lambda item: item["case_id"])]
-    batch_dir = collect(batch_id, case_ids, int(options.get("defer_failed_groups_gt", 1))) if case_ids else None
+    batch_dir = collect(
+        batch_id,
+        case_ids,
+        int(options.get("defer_failed_groups_gt", 1)),
+        bool(options.get("overwrite", False)),
+    ) if case_ids else None
     run_log = {
         "schema_version": "source_to_chat_turns_case_plan_run_v1",
         "batch_id": batch_id,
@@ -158,8 +166,9 @@ def main() -> None:
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--max-workers", type=int)
     parser.add_argument("--defer-failed-groups-gt", type=int)
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    result = run_case_plan(args.plan, args.batch_id, args.max_workers, args.defer_failed_groups_gt)
+    result = run_case_plan(args.plan, args.batch_id, args.max_workers, args.defer_failed_groups_gt, args.overwrite)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

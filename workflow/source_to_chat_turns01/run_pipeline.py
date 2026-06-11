@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from workflow.common.io import read_json as read_json_file
+from workflow.common.io import write_json as write_json_file
+
 from .config_loader import PROJECT_ROOT, ROOT, load_config
 from .vision_client import VisionClient
 
@@ -17,12 +20,11 @@ OUTPUT_ROOT = OUTPUTS_ROOT / "_case_runs"
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def load_manifest(source_output_dir: Path) -> dict[str, Any]:

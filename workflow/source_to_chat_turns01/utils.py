@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
+
+from workflow.common.io import read_json as read_json_file
+from workflow.common.io import write_json as write_json_file
 
 
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
@@ -15,12 +17,11 @@ def ensure_dir(path: Path) -> None:
 
 
 def write_json(path: Path, data: object) -> None:
-    ensure_dir(path.parent)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data)
 
 
 def read_json(path: Path) -> object:
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json_file(path)
 
 
 def compact_text(text: str) -> str:

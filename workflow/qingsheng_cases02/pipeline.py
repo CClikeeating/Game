@@ -13,12 +13,12 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from workflow.common.io import PROJECT_ROOT as ROOT
 from .config_loader import OUTPUTS_ROOT, load_config, read_json, write_json
 from .model_client import ChatModelClient
 from .prompt_builder import PRIMARY_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, primary_prompt, review_prompt
 
 
-ROOT = Path.cwd()
 INPUT_BUNDLES_ROOT = ROOT / "outputs" / "source_to_chat_turns01"
 
 REVIEW_FIELDS = [
@@ -1370,68 +1370,6 @@ def write_manifest(output_dir: Path, batch_id: str, rows: list[dict[str, Any]]) 
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
-
-
-def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dict[str, Any]) -> None:
-    write_human_review_index(path.with_name(f"{path.stem}_index.json"), rows)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "human_review"
-    ws.append(REVIEW_FIELDS)
-    for row in rows:
-        ws.append([row.get(field, "") for field in REVIEW_FIELDS])
-    header_fill = PatternFill("solid", fgColor="1F4E78")
-    header_font = Font(color="FFFFFF", bold=True)
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-    widths = {
-        "A": 14,
-        "B": 72,
-        "C": 24,
-        "D": 22,
-        "E": 72,
-        "F": 70,
-        "G": 45,
-        "H": 45,
-        "I": 45,
-        "J": 45,
-        "K": 18,
-        "L": 55,
-        "M": 40,
-        "N": 12,
-    }
-    for column, width in widths.items():
-        ws.column_dimensions[column].width = width
-    for row in ws.iter_rows():
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    if rows:
-        choices = review_rules.get("human_review_choices", [])
-        validation = DataValidation(type="list", formula1='"' + ",".join(choices) + '"', allow_blank=True)
-        ws.add_data_validation(validation)
-        validation.add(f"K2:K{len(rows) + 1}")
-
-    guide = wb.create_sheet("how_to_fill")
-    guide.append(["字段", "说明"])
-    guide.append(["your_choice", "下拉选择。模型冲突时可确认 DeepSeek、确认 Qwen，或选择手工修正。"])
-    guide.append(["corrected_value", "选择“手工修正”时填写最终值。可以写中文，也可以写 JSON。"])
-    guide.append(["original_path", "最原始输入文件位置，比如 HTML/PDF/长图路径。"])
-    guide.append(["source_images", "这一条复核项对应的第一阶段切片图路径，通常比原文件更容易定位具体位置。"])
-    guide.append(["source_excerpt", "关键 turn 附近上下文，方便你不用回看整套聊天也能判断。"])
-    guide.append(["notes", "你的补充说明。"])
-    guide.column_dimensions["A"].width = 22
-    guide.column_dimensions["B"].width = 90
-    for row in guide.iter_rows():
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-    for cell in guide[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
 
 
 def write_human_review(path: Path, rows: list[dict[str, Any]], review_rules: dict[str, Any]) -> None:

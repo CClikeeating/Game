@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from workflow.common.io import PROJECT_ROOT as ROOT
+from workflow.common.io import ensure_overwrite_allowed
 from .config_loader import OUTPUTS_ROOT, load_config, read_json, write_json
 from .model_client import ChatModelClient
 from .pipeline import (
@@ -29,7 +31,6 @@ from .pipeline import (
 )
 
 
-ROOT = Path.cwd()
 MAX_WORKERS_CAP = 50
 
 
@@ -169,11 +170,14 @@ def run_case_plan(
     plan_path: str,
     output_batch_id: str,
     max_workers: int | None = None,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     options = load_config("run_options.yaml").get("case_plan", {})
     if max_workers is not None:
         options["max_workers"] = max_workers
     options["max_workers"] = max(1, min(MAX_WORKERS_CAP, int(options.get("max_workers", 1))))
+    if overwrite:
+        options["overwrite"] = True
 
     models_config = load_config("models.yaml")
     configs = {
@@ -187,6 +191,8 @@ def run_case_plan(
 
     jobs = build_jobs(load_plan(Path(plan_path)), options)
     output_dir = OUTPUTS_ROOT / output_batch_id
+    if output_dir.exists():
+        ensure_overwrite_allowed(output_dir, bool(options.get("overwrite", False)))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_rows: list[dict[str, Any]] = []
@@ -264,8 +270,9 @@ def main() -> None:
     parser.add_argument("--plan", required=True, help="CSV with batch_id,input_bundle,case_id columns.")
     parser.add_argument("--output-batch-id", required=True)
     parser.add_argument("--max-workers", type=int)
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    result = run_case_plan(args.plan, args.output_batch_id, args.max_workers)
+    result = run_case_plan(args.plan, args.output_batch_id, args.max_workers, args.overwrite)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
