@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from workflow.common.io import resolve_path, write_json
+from workflow.qingsheng_skill_runtime04.model_client import RuntimeModelClient
 from workV.common import OUTPUT_ROOT, load_config, load_prompt, timestamp_id
 from workV.knowledge.search_segments import search_segments
-from workV.model_client import ChatJsonClient
+from workV.model_client import ChatJsonClient, parse_json_content
 from workV.runtime.vision_understanding import dry_run_image_summary, understand_images
+
+MODE_QUALITY_LOCAL = "quality_local"
+MODE_BAILIAN_RAG_FAST = "bailian_rag_fast"
 
 
 def run_reply(
@@ -19,16 +24,33 @@ def run_reply(
     index_path: str | None = None,
     batch_id: str = "reply_runs",
     dry_run: bool = False,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     run_id = timestamp_id()
     output_dir = OUTPUT_ROOT / "runs" / batch_id / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     models = load_config("models.json")
     user_id = str(models.get("user_id", "71"))
+    runtime_mode = normalize_mode(mode)
     image_paths = [resolve_path(path) for path in (images or [])]
     image_data = image_payload(question, context, image_paths, models, user_id, dry_run)
     image_understanding = image_data.get("text", "")
     input_text = build_input_text(question, context, image_understanding)
+    if runtime_mode == MODE_BAILIAN_RAG_FAST:
+        return run_bailian_rag_fast(
+            run_id,
+            output_dir,
+            question,
+            context,
+            image_paths,
+            image_data,
+            image_understanding,
+            input_text,
+            models,
+            user_id,
+            dry_run,
+        )
+
     label_prompt = build_label_prompt(input_text)
     reply_client = ChatJsonClient("reply_model", models["reply_model"], user_id)
 
@@ -38,6 +60,7 @@ def run_reply(
         user_prompt = build_reply_prompt(input_text, labels, references)
         preview = {
             "status": "dry_run",
+            "mode": runtime_mode,
             "run_id": run_id,
             "input_text": input_text,
             "images": [str(path) for path in image_paths],
@@ -61,6 +84,7 @@ def run_reply(
     result = normalize_reply_result(parsed, labels, references)
     summary = {
         "status": reply_result.get("status", ""),
+        "mode": runtime_mode,
         "run_id": run_id,
         "question": question,
         "context": context,
@@ -76,6 +100,114 @@ def run_reply(
     }
     write_json(output_dir / "summary.json", summary)
     return summary
+
+
+def run_bailian_rag_fast(
+    run_id: str,
+    output_dir: Path,
+    question: str,
+    context: str,
+    image_paths: list[Path],
+    image_data: dict[str, Any],
+    image_understanding: str,
+    input_text: str,
+    models: dict[str, Any],
+    user_id: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    reply_prompt = build_bailian_rag_prompt(input_text)
+    if dry_run:
+        preview = {
+            "status": "dry_run",
+            "mode": MODE_BAILIAN_RAG_FAST,
+            "run_id": run_id,
+            "input_text": input_text,
+            "images": [str(path) for path in image_paths],
+            "image_understanding": image_understanding,
+            "vision_result": image_data.get("model_result", {}),
+            "labels": {},
+            "reference_segments": [],
+            "reply_prompt": reply_prompt,
+            "output_dir": str(output_dir),
+        }
+        write_json(output_dir / "summary.json", preview)
+        return preview
+
+    rag_cfg, error = bailian_rag_config(models)
+    if error:
+        summary = unavailable_bailian_summary(run_id, output_dir, question, context, image_paths, image_data, image_understanding, error)
+        write_json(output_dir / "summary.json", summary)
+        return summary
+
+    reply_result = RuntimeModelClient("reply_rag_model", rag_cfg, user_id).chat("只输出合法 JSON。", reply_prompt, [])
+    parsed = parse_json_content(reply_result.get("raw_text", ""))
+    if reply_result.get("status") == "model_success" and not isinstance(parsed, dict):
+        reply_result = dict(reply_result)
+        reply_result["status"] = "model_json_invalid"
+    parsed = parsed if isinstance(parsed, dict) else {}
+    references = compact_rag_references(reply_result.get("references", []))
+    labels = extract_labels(parsed)
+    answer = normalize_reply_result(parsed, labels, references)
+    summary = {
+        "status": reply_result.get("status", ""),
+        "mode": MODE_BAILIAN_RAG_FAST,
+        "run_id": run_id,
+        "question": question,
+        "context": context,
+        "images": [str(path) for path in image_paths],
+        "image_understanding": image_understanding,
+        "vision_result": image_data.get("model_result", {}),
+        "labels": answer.get("labels", {}),
+        "reference_segments": references,
+        "answer": answer,
+        "reply_result": compact_model_result(reply_result),
+        "output_dir": str(output_dir),
+    }
+    write_json(output_dir / "summary.json", summary)
+    return summary
+
+
+def unavailable_bailian_summary(
+    run_id: str,
+    output_dir: Path,
+    question: str,
+    context: str,
+    image_paths: list[Path],
+    image_data: dict[str, Any],
+    image_understanding: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "status": "model_unavailable",
+        "mode": MODE_BAILIAN_RAG_FAST,
+        "error": error,
+        "run_id": run_id,
+        "question": question,
+        "context": context,
+        "images": [str(path) for path in image_paths],
+        "image_understanding": image_understanding,
+        "vision_result": image_data.get("model_result", {}),
+        "labels": {},
+        "reference_segments": [],
+        "answer": {
+            "reply": "",
+            "coach_analysis": "",
+            "labels": {},
+            "risk_warning": "百炼 RAG 快速模式还没有配置知识库 ID。",
+            "next_step": "",
+            "reference_segments": [],
+            "debug": {"reason": error},
+        },
+        "reply_result": {
+            "status": "model_unavailable",
+            "model": "reply_rag_model",
+            "client": "reply_rag_model",
+            "error": error,
+            "elapsed_seconds": 0,
+            "usage": {},
+        },
+        "output_dir": str(output_dir),
+    }
 
 
 def image_payload(
@@ -134,6 +266,60 @@ def build_reply_prompt(input_text: str, labels: dict[str, Any], references: list
             json.dumps(compact_refs, ensure_ascii=False, indent=2),
         ]
     )
+
+
+def build_bailian_rag_prompt(input_text: str) -> str:
+    principles = load_config("prompt_principles.json")
+    return "\n\n".join(
+        [
+            load_prompt("reply_generate_v01.md"),
+            "原则：",
+            json.dumps(principles, ensure_ascii=False, indent=2),
+            "当前输入：",
+            input_text,
+            "知识库检索要求：",
+            "使用百炼 file_search 从 workV 片段知识库中检索相似案例。优先学习片段里的迁移学习价值、建议回复动作和风险提醒；不要照搬不适合当前语境的原句。",
+            "当前基础标签：",
+            "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
+            "相似结构化案例片段：",
+            "由百炼 file_search 工具返回；如果没有命中，也要基于原则给出保守、自然的回复。",
+        ]
+    )
+
+
+def normalize_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    if not mode:
+        runtime = load_config("web.json").get("runtime", {})
+        mode = str(runtime.get("default_mode", MODE_QUALITY_LOCAL)).strip().lower()
+    aliases = {"quality": MODE_QUALITY_LOCAL, "local": MODE_QUALITY_LOCAL, "rag": MODE_BAILIAN_RAG_FAST}
+    mode = aliases.get(mode, mode)
+    return mode if mode in {MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST} else MODE_QUALITY_LOCAL
+
+
+def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    cfg = json.loads(json.dumps(models.get("reply_rag_model") or {}))
+    if not cfg:
+        return {}, "reply_rag_model_missing_config"
+    file_search = cfg.setdefault("file_search", {})
+    vector_ids = configured_vector_store_ids(cfg)
+    if not vector_ids:
+        return cfg, "reply_rag_model_missing_vector_store_ids"
+    file_search["enabled"] = True
+    file_search["vector_store_ids"] = vector_ids
+    return cfg, ""
+
+
+def configured_vector_store_ids(cfg: dict[str, Any]) -> list[str]:
+    file_search = cfg.get("file_search", {}) if isinstance(cfg.get("file_search"), dict) else {}
+    env_name = str(file_search.get("vector_store_ids_env") or cfg.get("vector_store_ids_env") or "").strip()
+    raw = os.environ.get(env_name, "") if env_name else ""
+    if raw:
+        return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+    ids = file_search.get("vector_store_ids", [])
+    if isinstance(ids, str):
+        return [item.strip() for item in ids.replace(";", ",").split(",") if item.strip()]
+    return [str(item).strip() for item in ids if str(item).strip()] if isinstance(ids, list) else []
 
 
 def extract_labels(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -213,17 +399,18 @@ def compact_reference(item: dict[str, Any]) -> dict[str, Any]:
         "男生原回复": item.get("男生原回复", ""),
         "原回复评价": item.get("原回复评价", ""),
         "更优回复": item.get("更优回复", ""),
-        "下一步建议": item.get("下一步建议", ""),
+        "迁移学习价值": item.get("迁移学习价值", ""),
         "match_reasons": item.get("match_reasons", []),
         "score": item.get("score", 0),
     }
 
 
 def normalize_reply_result(parsed: dict[str, Any], labels: dict[str, Any], references: list[dict[str, Any]]) -> dict[str, Any]:
+    raw_labels = parsed.get("labels", labels) if isinstance(parsed.get("labels", labels), dict) else labels
     return {
         "reply": str(parsed.get("reply", "")),
         "coach_analysis": str(parsed.get("coach_analysis", "")),
-        "labels": normalize_labels(parsed.get("labels", labels) if isinstance(parsed.get("labels", labels), dict) else labels),
+        "labels": normalize_labels(raw_labels) if raw_labels else {},
         "risk_warning": str(parsed.get("risk_warning", "")),
         "next_step": str(parsed.get("next_step", "")),
         "reference_segments": parsed.get("reference_segments") if isinstance(parsed.get("reference_segments"), list) else [item.get("segment_id", "") for item in references],
@@ -231,8 +418,27 @@ def normalize_reply_result(parsed: dict[str, Any], labels: dict[str, Any], refer
     }
 
 
+def compact_rag_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs = []
+    for index, item in enumerate(items, start=1):
+        refs.append(
+            {
+                "segment_id": item.get("filename") or item.get("file_id") or f"rag_ref_{index}",
+                "file_id": item.get("file_id", ""),
+                "filename": item.get("filename", ""),
+                "score": item.get("score", ""),
+                "text": item.get("text", ""),
+                "type": item.get("type", ""),
+                "labels": {},
+                "secondary_labels": {},
+                "match_reasons": ["百炼 file_search 命中"],
+            }
+        )
+    return refs
+
+
 def compact_model_result(result: dict[str, Any]) -> dict[str, Any]:
-    return {
+    compact = {
         "status": result.get("status", ""),
         "model": result.get("model", ""),
         "client": result.get("client", ""),
@@ -240,6 +446,11 @@ def compact_model_result(result: dict[str, Any]) -> dict[str, Any]:
         "elapsed_seconds": result.get("elapsed_seconds", 0),
         "usage": result.get("usage", {}),
     }
+    if result.get("references"):
+        compact["references"] = result.get("references", [])
+    if result.get("response_debug"):
+        compact["response_debug"] = result.get("response_debug", {})
+    return compact
 
 
 def main() -> None:
@@ -250,8 +461,15 @@ def main() -> None:
     parser.add_argument("--index-path")
     parser.add_argument("--batch-id", default="reply_runs")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--mode", choices=[MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST])
     args = parser.parse_args()
-    print(json.dumps(run_reply(args.question, args.context, args.image, args.index_path, args.batch_id, args.dry_run), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            run_reply(args.question, args.context, args.image, args.index_path, args.batch_id, args.dry_run, args.mode),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

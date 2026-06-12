@@ -15,7 +15,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from workflow.common.io import PROJECT_ROOT, read_json, write_json
 from workV.common import OUTPUT_ROOT, load_config, load_prompt
 from workV.model_client import ChatJsonClient
-from workV.schema import normalize_segment, validate_segments
+from workV.schema import extract_transfer_value, normalize_segment, validate_segments
 
 MAX_WORKERS_CAP = 50
 
@@ -31,7 +31,7 @@ REVIEW_FIELDS = [
     "主模型原回复评价",
     "主模型标签",
     "主模型建议回复",
-    "主模型下一步建议",
+    "主模型迁移学习价值",
     "主模型判断理由",
     "复核模型结论",
     "复核模型修改建议",
@@ -42,7 +42,7 @@ REVIEW_FIELDS = [
     "备注",
 ]
 
-REVIEW_CHOICES = ["通过", "按复核模型修改", "手工修正", "拒绝", "暂不启用", "说话人错误，回源修正", "跳过"]
+REVIEW_CHOICES = ["通过", "按复核模型修改", "手工修正", "拒绝", "暂不启用", "跳过"]
 MISSING_NODE_FIELDS = [
     "missing_id",
     "case_id",
@@ -56,7 +56,20 @@ MISSING_NODE_FIELDS = [
     "人工备注",
 ]
 
-MISSING_NODE_CHOICES = ["需要补拆", "不需要", "说话人错误，回源修正", "暂缓"]
+MISSING_NODE_CHOICES = ["需要补拆", "不需要", "暂缓"]
+
+DEFAULT_REVIEW_RULES = {
+    "auto_approve_keep_original": {
+        "enabled": True,
+        "reply_prefixes": ["保留原回复"],
+        "reason": "保留原回复且复核模型无修改意见",
+    },
+    "review_workbook": {
+        "include_only_need_human_review": True,
+        "review_choices": REVIEW_CHOICES,
+        "missing_node_choices": MISSING_NODE_CHOICES,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,21 @@ def load_run_options(max_workers: int | None = None, overwrite: bool = False) ->
     if overwrite:
         options["overwrite"] = True
     return options
+
+
+def load_review_rules() -> dict[str, Any]:
+    rules = json.loads(json.dumps(DEFAULT_REVIEW_RULES))
+    loaded = load_config("review_rules.json")
+    deep_update(rules, loaded)
+    return rules
+
+
+def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> None:
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_update(base[key], value)
+        else:
+            base[key] = value
 
 
 def build_jobs(cases: list[dict[str, Any]], models: dict[str, Any], options: dict[str, Any]) -> list[CaseJob]:
@@ -320,8 +348,15 @@ def rebuild_review_workbook(batch_id: str, review_filename: str = "human_review_
         payload = read_json(segments_path)
         review = read_json(review_path) if review_path.exists() else {}
         case = source_cases.get(case_id, {})
-        review_rows.extend(rows_for_review(case_id, payload.get("segments", []), review, len(review_rows) + 1, case))
+        segments = payload.get("segments", []) if isinstance(payload.get("segments", []), list) else []
+        changed = apply_review_policy(segments, bool(payload.get("validation_issues")))
+        if changed:
+            payload["segments"] = segments
+            write_json(segments_path, payload)
+        update_manifest_row_status(row, segments)
+        review_rows.extend(rows_for_review(case_id, segments, review, len(review_rows) + 1, case))
         missing_node_rows.extend(rows_for_missing_nodes(case_id, review, len(missing_node_rows) + 1, case))
+    write_json(manifest_path, manifest)
     workbook_path = batch_root / review_filename
     write_review_workbook(workbook_path, review_rows, missing_node_rows)
     return {
@@ -374,11 +409,7 @@ def process_job(job: CaseJob, output_root: Path, models: dict[str, Any], skip_re
     review = review_result.get("parsed", {}) if isinstance(review_result.get("parsed"), dict) else {}
     case_outline, segments = normalize_output(case_id, primary, review)
     issues = validate_segments(segments)
-    if issues:
-        for segment in segments:
-            segment["need_human_review"] = True
-            if segment.get("quality_status") == "draft":
-                segment["quality_status"] = "needs_review"
+    apply_review_policy(segments, bool(issues))
     write_json(case_dir / "case_outline.json", case_outline)
     write_json(
         case_dir / "segments.json",
@@ -415,6 +446,64 @@ def process_job(job: CaseJob, output_root: Path, models: dict[str, Any], skip_re
             compact_log(case_id, "review", review_result),
         ],
     }
+
+
+def apply_review_policy(segments: list[dict[str, Any]], has_validation_issues: bool = False) -> bool:
+    rules = load_review_rules()
+    changed = False
+    for segment in segments:
+        before = json.dumps(segment, ensure_ascii=False, sort_keys=True)
+        segment["迁移学习价值"] = str(segment.get("迁移学习价值") or extract_transfer_value(str(segment.get("quality_reason", ""))))
+        if has_validation_issues:
+            segment["need_human_review"] = True
+            if segment.get("quality_status") in {"draft", "approved"}:
+                segment["quality_status"] = "needs_review"
+        elif is_auto_approved_keep_original(segment, rules):
+            segment["quality_status"] = "approved"
+            segment["need_human_review"] = False
+            segment["auto_review_reason"] = str(rules["auto_approve_keep_original"].get("reason", "保留原回复且复核模型无修改意见"))
+        elif segment.get("quality_status") in {"approved", "disabled", "source_error"}:
+            segment["need_human_review"] = False
+        elif segment.get("quality_status") == "rejected":
+            segment["need_human_review"] = True
+        else:
+            segment["quality_status"] = "needs_review"
+            segment["need_human_review"] = True
+        after = json.dumps(segment, ensure_ascii=False, sort_keys=True)
+        changed = changed or before != after
+    return changed
+
+
+def is_auto_approved_keep_original(segment: dict[str, Any], rules: dict[str, Any]) -> bool:
+    config = rules.get("auto_approve_keep_original", {}) if isinstance(rules.get("auto_approve_keep_original", {}), dict) else {}
+    if not config.get("enabled", True):
+        return False
+    reply = str(segment.get("更优回复", "")).strip()
+    prefixes = config.get("reply_prefixes", ["保留原回复"])
+    if not isinstance(prefixes, list):
+        prefixes = ["保留原回复"]
+    if not any(reply.startswith(str(prefix)) for prefix in prefixes if str(prefix)):
+        return False
+    return model_review_has_no_modifications(segment.get("model_review", {}))
+
+
+def model_review_has_no_modifications(model_review: Any) -> bool:
+    if not isinstance(model_review, dict) or not model_review:
+        return True
+    verdict = str(model_review.get("verdict", "")).strip().lower()
+    if verdict in {"revise", "reject"}:
+        return False
+    issues = model_review.get("issues", [])
+    if isinstance(issues, list) and issues:
+        return False
+    return verdict in {"", "pass", "agree"}
+
+
+def update_manifest_row_status(row: dict[str, Any], segments: list[dict[str, Any]]) -> None:
+    row["segment_count"] = len(segments)
+    row["need_review_count"] = sum(1 for item in segments if item.get("need_human_review"))
+    model_failed = row.get("primary_status") != "model_success" or row.get("review_status") not in {"model_success", "skipped"}
+    row["status"] = "model_failed" if model_failed else "needs_review" if row["need_review_count"] or not segments else "ready"
 
 
 def normalize_output(case_id: str, primary: dict[str, Any], review: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -470,11 +559,16 @@ def rows_for_review(
     case: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     case = case or {}
+    rules = load_review_rules()
+    workbook_config = rules.get("review_workbook", {}) if isinstance(rules.get("review_workbook", {}), dict) else {}
+    include_only_need_review = bool(workbook_config.get("include_only_need_human_review", True))
     rows = []
-    for offset, segment in enumerate(segments):
+    for segment in segments:
+        if include_only_need_review and not segment.get("need_human_review"):
+            continue
         rows.append(
             {
-                "review_id": f"review_{start + offset:04d}",
+                "review_id": f"review_{start + len(rows):04d}",
                 "case_id": case_id,
                 "segment_id": segment.get("segment_id", ""),
                 "原文连接/定位": source_location(case, segment),
@@ -485,7 +579,7 @@ def rows_for_review(
                 "主模型原回复评价": segment.get("原回复评价", ""),
                 "主模型标签": format_labels(segment),
                 "主模型建议回复": segment.get("更优回复", ""),
-                "主模型下一步建议": segment.get("下一步建议", ""),
+                "主模型迁移学习价值": segment.get("迁移学习价值", ""),
                 "主模型判断理由": segment.get("quality_reason", ""),
                 "复核模型结论": review_verdict_text(segment.get("model_review", {})),
                 "复核模型修改建议": review_issues_text(segment.get("model_review", {})),
@@ -662,6 +756,14 @@ def speaker_cn(value: str) -> str:
     return {"male": "男生", "female": "女生", "system": "系统", "narration": "旁白"}.get(value, value or "未知")
 
 def write_review_workbook(path: Path, rows: list[dict[str, Any]], missing_rows: list[dict[str, Any]] | None = None) -> None:
+    rules = load_review_rules()
+    workbook_config = rules.get("review_workbook", {}) if isinstance(rules.get("review_workbook", {}), dict) else {}
+    review_choices = workbook_config.get("review_choices", REVIEW_CHOICES)
+    if not isinstance(review_choices, list):
+        review_choices = REVIEW_CHOICES
+    missing_node_choices = workbook_config.get("missing_node_choices", MISSING_NODE_CHOICES)
+    if not isinstance(missing_node_choices, list):
+        missing_node_choices = MISSING_NODE_CHOICES
     wb = Workbook()
     ws = wb.active
     ws.title = "segments_review"
@@ -681,7 +783,7 @@ def write_review_workbook(path: Path, rows: list[dict[str, Any]], missing_rows: 
             "主模型原回复评价": 52,
             "主模型标签": 30,
             "主模型建议回复": 46,
-            "主模型下一步建议": 48,
+            "主模型迁移学习价值": 54,
             "主模型判断理由": 52,
             "复核模型结论": 28,
             "复核模型修改建议": 70,
@@ -691,7 +793,7 @@ def write_review_workbook(path: Path, rows: list[dict[str, Any]], missing_rows: 
             "人工修正": 60,
             "备注": 40,
         },
-        REVIEW_CHOICES,
+        [str(item) for item in review_choices],
     )
     missing_ws = wb.create_sheet("missing_nodes_review")
     write_sheet(
@@ -710,7 +812,7 @@ def write_review_workbook(path: Path, rows: list[dict[str, Any]], missing_rows: 
             "人工结论": 24,
             "人工备注": 50,
         },
-        MISSING_NODE_CHOICES,
+        [str(item) for item in missing_node_choices],
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,13 @@ DEFAULT_CONFIG = {
     "server": {"host": "127.0.0.1", "port": 7870, "debug": False},
     "upload": {"max_content_mb": 24, "allowed_image_extensions": [".png", ".jpg", ".jpeg", ".webp", ".gif"]},
     "output": {"root": "workV/outputs/web"},
+    "runtime": {
+        "default_mode": "quality_local",
+        "modes": {
+            "quality_local": "质量模式：本地标签检索",
+            "bailian_rag_fast": "百炼 RAG 快速模式",
+        },
+    },
 }
 
 
@@ -28,12 +36,12 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html", result=None, form=default_form())
+        return render_template("index.html", result=None, form=default_form(config))
 
     @app.post("/run")
     def run():
         run_id = uuid.uuid4().hex[:12]
-        form = form_from_request()
+        form = form_from_request(config)
         output_root = resolve_path(config["output_root"])
         upload_dir = output_root / "uploads" / run_id
         image_paths = save_images(request.files.getlist("images"), upload_dir, config)
@@ -46,6 +54,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 index_path=form["index_path"] or None,
                 batch_id=f"web_{run_id}",
                 dry_run=form["dry_run"],
+                mode=form["mode"],
             )
         except Exception as exc:  # noqa: BLE001
             result = {"status": "web_error", "answer": {}, "labels": {}, "reference_segments": [], "output_dir": ""}
@@ -70,6 +79,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             "notes": payload.get("notes", ""),
         }
         write_json(summary_path, summary)
+        append_feedback(config["feedback_log"], summary_path, summary)
         return jsonify({"ok": True})
 
     return app
@@ -83,9 +93,10 @@ def normalize_summary(run_id: str, form: dict[str, Any], image_paths: list[Path]
         "context": form["context"],
         "index_path": form["index_path"],
         "dry_run": form["dry_run"],
+        "mode": form["mode"],
         "images": [str(path) for path in image_paths],
         "status": result.get("status", ""),
-        "error": error,
+        "error": error or result.get("error", ""),
         "image_understanding": result.get("image_understanding", ""),
         "answer": answer,
         "labels": result.get("labels", answer.get("labels", {})),
@@ -110,7 +121,8 @@ def collect_model_metrics(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "tokens": format_usage(vision.get("usage", {}) if isinstance(vision.get("usage", {}), dict) else {}),
             }
         )
-    for label, key in [("标签判断", "label_result"), ("回复生成", "reply_result")]:
+    reply_label = "百炼 RAG 回复" if result.get("mode") == "bailian_rag_fast" else "回复生成"
+    for label, key in [("标签判断", "label_result"), (reply_label, "reply_result")]:
         item = result.get(key, {}) if isinstance(result.get(key, {}), dict) else {}
         if not item:
             continue
@@ -151,13 +163,18 @@ def load_web_config(path: str | Path | None = None) -> dict[str, Any]:
     server = raw.get("server", {})
     upload = raw.get("upload", {})
     output = raw.get("output", {})
+    runtime = raw.get("runtime", {})
+    output_root = Path(os.environ.get("WORKV_WEB_OUTPUT_ROOT", output.get("root", "workV/outputs/web")))
     return {
         "host": os.environ.get("WORKV_WEB_HOST", server.get("host", "127.0.0.1")),
         "port": int(os.environ.get("WORKV_WEB_PORT", server.get("port", 7870))),
         "debug": parse_bool(os.environ.get("WORKV_WEB_DEBUG"), bool(server.get("debug", False))),
         "max_content_mb": int(os.environ.get("WORKV_WEB_MAX_CONTENT_MB", upload.get("max_content_mb", 24))),
         "allowed_image_extensions": {normalize_extension(item) for item in upload.get("allowed_image_extensions", [])},
-        "output_root": Path(os.environ.get("WORKV_WEB_OUTPUT_ROOT", output.get("root", "workV/outputs/web"))),
+        "output_root": output_root,
+        "feedback_log": output_root / str(output.get("feedback_log", "feedback.jsonl")),
+        "default_mode": os.environ.get("WORKV_REPLY_MODE", runtime.get("default_mode", "quality_local")),
+        "modes": runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"]),
     }
 
 
@@ -185,17 +202,49 @@ def resolve_path(path: str | Path) -> Path:
     return value if value.is_absolute() else PROJECT_ROOT / value
 
 
-def default_form() -> dict[str, Any]:
-    return {"question": "", "context": "", "index_path": "", "dry_run": False}
+def default_form(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "question": "我该怎么回",
+        "context": "",
+        "index_path": "",
+        "dry_run": False,
+        "mode": config["default_mode"],
+        "modes": config["modes"],
+    }
 
 
-def form_from_request() -> dict[str, Any]:
+def form_from_request(config: dict[str, Any]) -> dict[str, Any]:
+    mode = request.form.get("mode", config["default_mode"]).strip()
+    if mode not in config["modes"]:
+        mode = config["default_mode"]
     return {
         "question": request.form.get("question", "").strip(),
         "context": request.form.get("context", "").strip(),
         "index_path": request.form.get("index_path", "").strip(),
         "dry_run": request.form.get("dry_run") == "on",
+        "mode": mode,
+        "modes": config["modes"],
     }
+
+
+def append_feedback(path: Path, summary_path: Path, summary: dict[str, Any]) -> None:
+    feedback = summary.get("feedback", {}) if isinstance(summary.get("feedback", {}), dict) else {}
+    answer = summary.get("answer", {}) if isinstance(summary.get("answer", {}), dict) else {}
+    record = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "summary_path": str(summary_path),
+        "run_id": summary.get("run_id", ""),
+        "mode": summary.get("mode", ""),
+        "rating": feedback.get("rating", ""),
+        "notes": feedback.get("notes", ""),
+        "question": summary.get("question", ""),
+        "context": summary.get("context", ""),
+        "reply": answer.get("reply", ""),
+        "status": summary.get("status", ""),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def allowed_image(filename: str, config: dict[str, Any]) -> bool:
@@ -233,6 +282,5 @@ app = create_app()
 if __name__ == "__main__":
     cfg = load_web_config()
     app.run(host=cfg["host"], port=cfg["port"], debug=cfg["debug"], use_reloader=False)
-
 
 

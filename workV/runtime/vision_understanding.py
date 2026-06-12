@@ -33,7 +33,11 @@ def dry_run_image_summary(image_paths: list[Path]) -> dict[str, Any]:
 
 
 def build_system_prompt() -> str:
-    return "你是新版 MVP 的聊天截图理解助手，只输出可用于后续标签判断和回复建议的事实摘要。"
+    return (
+        "你是新版 MVP 的聊天截图理解助手，只输出可用于后续标签判断和回复建议的事实摘要。"
+        "默认按聊天气泡位置判断说话人：左侧/白色气泡=女生或对方，右侧气泡=男生或用户；"
+        "只有用户说明或截图内明确证据相反时才覆盖这个默认规则。"
+    )
 
 
 def build_user_prompt(question: str, context: str) -> str:

@@ -115,7 +115,7 @@ def segment_asset_row(segment: dict[str, Any], outline: dict[str, Any], index: i
         "男生原回复": segment.get("男生原回复", ""),
         "原回复评价": segment.get("原回复评价", ""),
         "更优回复": segment.get("更优回复", ""),
-        "下一步建议": segment.get("下一步建议", ""),
+        "迁移学习价值": segment.get("迁移学习价值", ""),
         "quality_status": segment.get("quality_status", ""),
     }
     row["tags"] = build_tags(row)
@@ -215,7 +215,7 @@ def experience_row(row: dict[str, Any]) -> dict[str, Any]:
         "original_reply": row.get("男生原回复", ""),
         "original_reply_review": row.get("原回复评价", ""),
         "better_reply": row.get("更优回复", ""),
-        "next_step": row.get("下一步建议", ""),
+        "transfer_value": row.get("迁移学习价值", ""),
         "transferable_rule": infer_transferable_rule(row),
         "search_text": row.get("search_text", ""),
     }
@@ -252,8 +252,8 @@ def render_segment_markdown(row: dict[str, Any], max_text_chars: int) -> str:
         "## 更优回复",
         trim(row.get("更优回复", ""), max_text_chars),
         "",
-        "## 下一步建议",
-        trim(row.get("下一步建议", ""), max_text_chars),
+        "## 迁移学习价值",
+        trim(row.get("迁移学习价值", ""), max_text_chars),
         "",
         "## 检索文本",
         trim(row.get("search_text", ""), max_text_chars),
@@ -263,6 +263,9 @@ def render_segment_markdown(row: dict[str, Any], max_text_chars: int) -> str:
 
 
 def infer_transferable_rule(row: dict[str, Any]) -> str:
+    transfer_value = str(row.get("迁移学习价值", "")).strip()
+    if transfer_value:
+        return transfer_value
     strategy = row.get("labels", {}).get("推荐策略", "") if isinstance(row.get("labels", {}), dict) else ""
     review = str(row.get("原回复评价", "")).strip()
     if strategy and review:
@@ -305,7 +308,7 @@ def build_search_text(row: dict[str, Any]) -> str:
         row.get("男生原回复", ""),
         row.get("原回复评价", ""),
         row.get("更优回复", ""),
-        row.get("下一步建议", ""),
+        row.get("迁移学习价值", ""),
     ]
     return "\n".join(str(item).strip() for item in chunks if str(item).strip())
 

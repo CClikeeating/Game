@@ -36,6 +36,26 @@
     "max_tokens": 5000,
     "response_format_json": true
   },
+  "reply_rag_model": {
+    "enabled": true,
+    "provider": "qwen_dashscope",
+    "api_style": "openai_compatible_responses_file_search",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-plus",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "temperature": 0.2,
+    "timeout_seconds": 180,
+    "max_tokens": 1000,
+    "enable_thinking": false,
+    "file_search": {
+      "enabled": true,
+      "vector_store_ids_env": "WORKV_BAILIAN_VECTOR_STORE_IDS",
+      "vector_store_ids": ["7cjj0p9hzi"],
+      "max_num_results": 3,
+      "include_results": true,
+      "tool_choice": "required"
+    }
+  },
   "vision_model": {
     "enabled": true,
     "provider": "qwen_dashscope",

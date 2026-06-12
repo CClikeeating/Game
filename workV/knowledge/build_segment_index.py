@@ -75,7 +75,7 @@ def index_row(segment: dict[str, Any], outline: dict[str, Any]) -> dict[str, Any
         segment.get("男生原回复", ""),
         segment.get("原回复评价", ""),
         segment.get("更优回复", ""),
-        segment.get("下一步建议", ""),
+        segment.get("迁移学习价值", ""),
     ]
     return {
         "case_id": segment.get("case_id", ""),
@@ -88,7 +88,7 @@ def index_row(segment: dict[str, Any], outline: dict[str, Any]) -> dict[str, Any
         "男生原回复": segment.get("男生原回复", ""),
         "原回复评价": segment.get("原回复评价", ""),
         "更优回复": segment.get("更优回复", ""),
-        "下一步建议": segment.get("下一步建议", ""),
+        "迁移学习价值": segment.get("迁移学习价值", ""),
         "case_summary": outline.get("case_summary", ""),
         "quality_status": segment.get("quality_status", ""),
         "search_text": "\n".join(str(chunk) for chunk in chunks if chunk),

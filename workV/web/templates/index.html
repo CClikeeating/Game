@@ -17,8 +17,8 @@
     .panel h2 { margin:0; padding:16px 16px 0; font-size:16px; }
     form, .result { padding:16px; }
     label { display:block; margin:0 0 7px; font-size:13px; font-weight:700; color:#334155; }
-    textarea, input[type="text"] { width:100%; border:1px solid var(--line); border-radius:8px; padding:11px; background:#fbfcff; font:inherit; font-size:14px; resize:vertical; }
-    textarea:focus, input[type="text"]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(23,107,93,.12); background:#fff; }
+    textarea, input[type="text"], select { width:100%; border:1px solid var(--line); border-radius:8px; padding:11px; background:#fbfcff; font:inherit; font-size:14px; resize:vertical; }
+    textarea:focus, input[type="text"]:focus, select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(23,107,93,.12); background:#fff; }
     .field { margin-bottom:15px; }
     .hint { margin-top:7px; color:var(--muted); font-size:12px; line-height:1.5; }
     .upload { border:1px dashed #b8c4d8; border-radius:8px; padding:13px; background:#f9fbff; }
@@ -26,7 +26,7 @@
     button { border:0; border-radius:8px; min-height:40px; padding:0 16px; background:var(--accent); color:white; font-weight:750; cursor:pointer; }
     button.secondary { background:#eef4f2; color:#155448; border:1px solid #c9ded8; }
     .dry { color:var(--muted); font-size:13px; display:inline-flex; align-items:center; gap:7px; }
-    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:12px; }
+    .metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-bottom:12px; }
     .metric { border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcff; }
     .metric span { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
     .metric strong { font-size:14px; overflow-wrap:anywhere; }
@@ -54,9 +54,9 @@
     <header>
       <div>
         <h1>workV 回复测试台</h1>
-        <p class="sub">文本/截图输入 -> 标签判断 -> 本地片段检索 -> 回复建议。</p>
+        <p class="sub">文本/截图输入 -> 质量模式或百炼 RAG 快速模式 -> 回复建议。</p>
       </div>
-      <div class="sub">本地片段知识库优先，外部 file_search 默认不参与。</div>
+      <div class="sub">质量模式保留三段链路；百炼 RAG 快速模式用于压缩调用次数。</div>
     </header>
     <main class="layout">
       <section class="panel">
@@ -73,7 +73,16 @@
           <div class="field">
             <label for="index_path">片段索引路径</label>
             <input id="index_path" name="index_path" type="text" value="{{ form.index_path }}" placeholder="默认 workV/outputs/indexes/segments_index.jsonl">
-            <div class="hint">可以留空使用默认本地索引；dry-run 可在没有模型调用时检查标签和检索。</div>
+            <div class="hint">质量模式使用本地索引；百炼 RAG 快速模式会忽略此路径，改用百炼知识库。</div>
+          </div>
+          <div class="field">
+            <label for="mode">运行模式</label>
+            <select id="mode" name="mode">
+              {% for value, label in form.modes.items() %}
+              <option value="{{ value }}" {% if form.mode == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <div class="hint">百炼 RAG 快速模式：文本 1 次模型调用；截图 2 次模型调用。</div>
           </div>
           <div class="field">
             <label for="images">聊天截图</label>
@@ -91,6 +100,7 @@
         <div class="result">
           <div class="metrics">
             <div class="metric"><span>状态</span><strong>{{ result.status }}</strong></div>
+            <div class="metric"><span>模式</span><strong>{{ result.mode }}</strong></div>
             <div class="metric"><span>图片</span><strong>{{ result.images|length }} 张</strong></div>
             <div class="metric"><span>参考片段</span><strong>{{ result.reference_segments|length }} 条</strong></div>
             <div class="metric"><span>run</span><strong>{{ result.run_id }}</strong></div>
@@ -132,7 +142,12 @@
           <div class="refs">
             {% for ref in result.reference_segments %}
             <div class="ref">
-              <div class="ref-title"><span>{{ ref.segment_id }}</span><span>score={{ ref.score }}</span></div>
+              <div class="ref-title"><span>{{ ref.segment_id }}</span><span>{% if ref.score != "" %}score={{ ref.score }}{% endif %}</span></div>
+              {% if ref.filename or ref.file_id %}
+              <pre>文件：{{ ref.filename or ref.file_id }}
+片段摘要：{{ ref.text or "无" }}
+命中原因：{{ ref.match_reasons }}</pre>
+              {% else %}
               <div class="chips">
                 {% for key, value in ref.labels.items() %}<span class="chip">{{ key }}: {{ value }}</span>{% endfor %}
                 {% for key, value in ref.secondary_labels.items() %}{% if value %}<span class="chip">次要{{ key }}: {{ value }}</span>{% endif %}{% endfor %}
@@ -140,8 +155,9 @@
               <pre>女生最后一句：{{ ref["女生最后一句"] }}
 男生原回复：{{ ref["男生原回复"] }}
 建议回复：{{ ref["更优回复"] }}
-下一步建议：{{ ref["下一步建议"] }}
+迁移学习价值：{{ ref["迁移学习价值"] }}
 命中原因：{{ ref.match_reasons }}</pre>
+              {% endif %}
             </div>
             {% else %}
             <div class="box"><pre>没有检索到参考片段。请先构建 approved segments 索引，或使用 dry-run 检查路径。</pre></div>
@@ -181,6 +197,5 @@
   </script>
 </body>
 </html>
-
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .common import load_config
@@ -21,8 +22,10 @@ SEGMENT_FIELDS = [
     "回复强度",
     "次要标签",
     "更优回复",
-    "下一步建议",
+    "迁移学习价值",
 ]
+
+TRANSFER_VALUE_KEYWORDS = ["迁移", "学习", "价值", "复用", "可复用", "借鉴", "值得"]
 
 
 def taxonomy() -> dict[str, list[str]]:
@@ -54,7 +57,20 @@ def normalize_segment(segment: dict[str, Any], case_id: str, index: int) -> dict
     output["quality_status"] = str(segment.get("quality_status") or "draft")
     output["need_human_review"] = bool(segment.get("need_human_review", False))
     output["quality_reason"] = str(segment.get("quality_reason") or "")
+    if not str(output.get("迁移学习价值", "")).strip():
+        output["迁移学习价值"] = extract_transfer_value(output["quality_reason"])
     return output
+
+
+def extract_transfer_value(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    pieces = [item.strip() for item in re.split(r"[。！？!?；;\n]+", value) if item.strip()]
+    for piece in pieces:
+        if any(keyword in piece for keyword in TRANSFER_VALUE_KEYWORDS):
+            return piece
+    return ""
 
 
 def normalize_secondary_labels(value: Any, labels: dict[str, list[str]]) -> dict[str, Any]:
