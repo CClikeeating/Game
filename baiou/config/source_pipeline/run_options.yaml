@@ -1,0 +1,15 @@
+﻿{
+  "case_plan": {
+    "max_workers": 2,
+    "user_id_strategy": "worker_index",
+    "user_id_start": 1,
+    "user_id_prefix": "",
+    "mode": "group",
+    "limit": null,
+    "defer_failed_groups_gt": 1,
+    "fail_fast": false,
+    "overwrite": false
+  }
+}
+
+

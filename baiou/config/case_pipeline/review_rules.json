@@ -1,0 +1,14 @@
+﻿{
+  "auto_approve_keep_original": {
+    "enabled": true,
+    "reply_prefixes": ["保留原回复"],
+    "reason": "保留原回复且复核模型无修改意见"
+  },
+  "review_workbook": {
+    "include_only_need_human_review": true,
+    "review_choices": ["通过", "按复核模型修改", "手工修正", "拒绝", "暂不启用", "跳过"],
+    "missing_node_choices": ["需要补拆", "不需要", "暂缓"]
+  }
+}
+
+

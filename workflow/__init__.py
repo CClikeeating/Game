@@ -1,2 +1,0 @@
-"""Baiou workflow pipelines."""
-

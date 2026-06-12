@@ -1,72 +1,143 @@
-# Baiou Case Workflow
+# Baiou 主线
 
-## 新版 MVP 工作入口
+当前项目主线只维护 `baiou/`。历史模块已经从当前项目移除，不参与新流程运行、测试和开发。
 
-当前新版 MVP 改造请先进入 `workV/` 新工作区，不要直接在旧 `workflow/` 上继续改产品逻辑。
-
-协作和后续开发默认顺序：
-
-1. 先阅读 `workV/README.md`。
-2. 新功能优先放在 `workV/` 下。
-3. 旧 `workflow/` 只作为可复用来源：管道1整案输出、管道2双模型复核机制、管道3资产导出思路、旧截图能力。
-4. 不要把旧 7 阶段体系、旧 `case_card` schema、旧 `qingsheng-skill` 长 Prompt、旧百炼 `file_search` 默认混进新版 v0.1。
-5. 新版默认流程是：旧管道1整案 -> `workV` 拆 `segments_v01` -> xlsx 人工复核 -> approved segments -> 本地片段索引/片段资产 -> 文本或截图回复测试台。
-
-常用入口：
-
-```powershell
-# 查看新版说明
-Get-Content workV/README.md
-
-# 启动新版本地测试台
-python -m workV.web.serve
-```
-
-下面是旧项目原说明，保留用于理解历史管道和复用边界。
-
-这个项目把聊天素材加工成 `qingsheng-skill` 可用的案例、测试题和经验包。
-
-## 目录结构
-
-```text
-workflow/          管道代码、配置、模板、说明
-data/              原始输入数据，不进 Git
-outputs/           每层管道的批次输出包，不进 Git
-qingsheng-skill/   skill 本体，独立保留
-other/             临时辅助工具
-archive/           旧实验和旧素材归档，主流程不依赖
-```
-
-## 主流程
+## 主线流程
 
 ```text
 data/raw/*
-  -> workflow/source_to_chat_turns01
-  -> outputs/source_to_chat_turns01/{batch_id}
-  -> workflow/qingsheng_cases02
-  -> outputs/qingsheng_cases02/{batch_id}
-  -> workflow/qingsheng_skill_eval03
-  -> outputs/qingsheng_skill_eval03/{batch_id}
+  -> baiou.source_pipeline
+  -> outputs/baiou/source
+  -> baiou.case_pipeline.production
+  -> outputs/baiou/cases/segments
+  -> baiou.case_pipeline.knowledge
+  -> outputs/baiou/cases/knowledge/current
+  -> baiou.product
+  -> outputs/baiou/product
 ```
 
-每一层都读取上一层的完整批次包根目录，而不是复制出来的单个 JSON。
+## 1. 管道1：素材到聊天话轮
 
-## 三类最终资产
+负责把 html、pdf、长图、图片或图片文件夹转成结构化聊天话轮，并生成复核表。
 
-管道三会从管道二案例包生成：
+主要产物：
 
-- `learning_cases/`：学习案例和案例索引。
-- `test_questions/`：用来测试 skill 的 eval 题。
-- `experience_pack/`：未来部署 skill 时可带走的干净经验包。
+```text
+outputs/baiou/source/prepared/{source_id}/
+outputs/baiou/source/case_runs/{case_id}/
+outputs/baiou/source/batches/{batch_id}/
+```
 
-## 当前运行层
+关键文件：
 
-`workflow/qingsheng_skill_runtime04` 用于把 `qingsheng-skill` 接到模型和知识库上：
+```text
+source_manifest.json
+block_manifest.json
+chat_turns.json
+chat_readable.md
+batch_chat_turns.json
+handoff.json
+human_review.xlsx
+```
 
-- 文字输入：Qwen `qwen3.7-plus` + 百炼知识库 `file_search`。
-- 图片输入：默认先用 Qwen3-VL 轻量视觉模型提取聊天摘要，再用摘要检索百炼知识库。
-- 图片模式可切换：`fast` 加载 skill 后由视觉模型直接回答，`rag` 先摘要再检索，`auto` 当前等同 `rag`。
+## 2. 管道2：案例片段生产
 
-后续需要单独优化 runtime prompt：把完整 skill 和 references 压缩成产品运行版短提示词，以降低 token 成本和响应时间。
+负责从管道1的 source batch 生成 `segments_v01`，并产出人工复核表。复核后只有 `approved` 片段进入管道3；`disabled` 片段统一留在本批次汇总表里。
 
-`archive/` 里的内容只作历史保留，后续主流程不要读取它。
+主要产物：
+
+```text
+outputs/baiou/cases/segments/{batch_id}/
+```
+
+关键文件：
+
+```text
+segments_manifest.json
+human_review_segments.xlsx
+disabled_segments.xlsx
+disabled_segments.jsonl
+case_outline.json
+segments.json
+model_review.json
+```
+
+## 3. 管道3：知识库构建
+
+负责把管道2里所有 `approved` 片段合并进持续累积的当前知识总库，并生成本地检索索引和 RAG 上传文档。产品层默认只读取当前总库。
+
+主要产物：
+
+```text
+outputs/baiou/cases/knowledge/current/
+outputs/baiou/cases/knowledge/imports/{batch_id}/
+```
+
+关键文件：
+
+```text
+current/segments.jsonl
+current/local_index/segments_index.jsonl
+current/rag_knowledge_base/segments/{batch_id}_{timestamp}/{segment_id}.md
+current/rag_knowledge_base/upload_manifest.csv
+imports/{batch_id}/import_summary.json
+imports/{batch_id}/imported_segments.jsonl
+imports/{batch_id}/skipped_segments.jsonl
+```
+
+## 4. 产品层
+
+负责文本/截图输入、标签判断、本地案例片段检索、百炼 RAG 快速模式、回复生成和网页测试台。
+
+主要产物：
+
+```text
+outputs/baiou/product/uploads/{run_id}/
+outputs/baiou/product/runs/{run_id}/summary.json
+outputs/baiou/product/feedback.jsonl
+```
+
+启动网页：
+
+```powershell
+python -m baiou.product.web.serve
+```
+
+或双击：
+
+```text
+start_baiou_web.cmd
+start_baiou_web.ps1
+```
+
+## 配置
+
+配置集中在：
+
+```text
+baiou/config/source_pipeline/
+baiou/config/case_pipeline/
+baiou/config/product/
+```
+
+常用环境变量：
+
+```text
+BAIOU_OUTPUT_ROOT
+BAIOU_WEB_CONFIG
+BAIOU_WEB_HOST
+BAIOU_WEB_PORT
+BAIOU_WEB_OUTPUT_ROOT
+BAIOU_REPLY_MODE
+BAIOU_VECTOR_STORE_IDS
+DASHSCOPE_API_KEY
+DEEPSEEK_API_KEY
+```
+
+## 保留目录
+
+- `baiou/`：当前唯一主线代码。
+- `tests/`：当前主线测试。
+- `data/`：原始素材输入。
+- `tt/`：临时真实产品流测试素材，需要保留。
+- `outputs/baiou/`：主线运行产物。
