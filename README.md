@@ -106,8 +106,7 @@ python -m baiou.product.web.serve
 或双击：
 
 ```text
-start_baiou_web.cmd
-start_baiou_web.ps1
+run_baiou_web.cmd
 ```
 
 ## 配置
