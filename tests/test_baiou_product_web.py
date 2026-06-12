@@ -27,6 +27,14 @@ def test_baiou_web_config_uses_baiou_output(monkeypatch, tmp_path: Path) -> None
     assert not web_app.allowed_image("chat.jpg", config)
 
 
+def test_baiou_web_default_mode_is_bailian_rag_fast(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(web_app, "PROJECT_ROOT", tmp_path)
+    config = web_app.load_web_config()
+
+    assert config["default_mode"] == "bailian_rag_fast"
+    assert "quality_local" in config["modes"]
+
+
 def test_baiou_web_run_uses_product_runtime(monkeypatch, tmp_path: Path) -> None:
     captured = {}
 

@@ -3,7 +3,7 @@
   "upload": {"max_content_mb": 24, "allowed_image_extensions": [".png", ".jpg", ".jpeg", ".webp", ".gif"]},
   "output": {"root": "outputs/baiou/product", "feedback_log": "feedback.jsonl"},
   "runtime": {
-    "default_mode": "quality_local",
+    "default_mode": "bailian_rag_fast",
     "modes": {
       "quality_local": "质量模式：本地标签检索",
       "bailian_rag_fast": "百炼 RAG 快速模式"
