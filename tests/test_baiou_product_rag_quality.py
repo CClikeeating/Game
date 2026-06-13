@@ -1,6 +1,7 @@
 from baiou.product.runtime.reply_engine import (
     MODE_BAILIAN_RAG_QUALITY,
     build_bailian_rag_prompt,
+    build_quality_label_prompt,
     normalize_mode,
     normalize_quality_guidance,
     resolve_user_id,
@@ -63,6 +64,17 @@ def test_bailian_quality_prompt_uses_soft_anchor_without_overconstraining() -> N
     assert "除非软锚点判断为明确测试或证据很强" in prompt
     assert "那聊点付费的" in prompt
     assert "少用“奖励你”“给你机会”“乖”等训导感词" in prompt
+    assert "女生只回复“嗯嗯/好/好的/知道啦”等低信息量承接" in prompt
+    assert "不要强行解读为暧昧、口是心非、怕你担心" in prompt
+
+
+def test_quality_label_prompt_does_not_overread_low_information_acknowledgement() -> None:
+    prompt = build_quality_label_prompt("女生/对方最后一句：嗯嗯\n男生/用户最近回复：那你少喝点 早点回去")
+
+    assert "低信息量承接" in prompt
+    assert "不要强行解读为暧昧、口是心非、怕你担心" in prompt
+    assert "推进空间优先为低" in prompt
+    assert "推进尺度优先为低压力承接或降压收住" in prompt
 
 
 def test_quality_guidance_accepts_chat_level_sexual_tension_scale() -> None:
