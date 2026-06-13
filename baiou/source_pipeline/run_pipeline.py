@@ -3,6 +3,7 @@
 import argparse
 import copy
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,18 @@ def should_be_narration(text: str, triggers: list[str]) -> bool:
     return any(trigger and trigger in text for trigger in triggers)
 
 
+def should_be_system(text: str, rules: dict[str, Any]) -> bool:
+    compact = str(text or "").strip()
+    if not compact:
+        return False
+    exact_values = {str(item).strip() for item in rules.get("system_text_exact", []) if str(item).strip()}
+    if compact in exact_values:
+        return True
+    if any(str(item).strip() and str(item).strip() in compact for item in rules.get("system_text_contains", [])):
+        return True
+    return any(re.fullmatch(str(pattern), compact) for pattern in rules.get("system_time_patterns", []) if str(pattern).strip())
+
+
 def infer_content_type(turn: dict[str, Any], speaker: str, rules: dict[str, Any]) -> tuple[str, str]:
     text = str(turn.get("text", "")).strip()
     reason = str(turn.get("reason", "")).strip()
@@ -151,7 +164,10 @@ def normalize_blocks(
                     notes = str(turn.get("notes", "")).strip()
                     if speaker not in valid_speakers:
                         speaker = "unknown"
-                    if should_be_narration(text, narration_triggers) and speaker in {"female", "unknown"}:
+                    if should_be_system(text, rules):
+                        speaker = "system"
+                        notes = "; ".join(part for part in [notes, "postprocess: system_trigger"] if part)
+                    elif should_be_narration(text, narration_triggers) and speaker in {"female", "unknown"}:
                         speaker = "narration"
                         notes = "; ".join(part for part in [notes, "postprocess: narration_trigger"] if part)
                     content_type, visual_note = infer_content_type(turn, speaker, rules)
@@ -226,6 +242,13 @@ def write_readable(path: Path, case_id: str, blocks: list[dict[str, Any]], summa
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
+def display_output_dir(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def run(case_id: str, source_output: str, mode: str, limit: int | None, user_id: str | None = None) -> dict[str, Any]:
     config = copy.deepcopy(load_config("vision_model_config.yaml"))
     if user_id is not None:
@@ -283,7 +306,7 @@ def run(case_id: str, source_output: str, mode: str, limit: int | None, user_id:
     write_json(output_dir / "quality_report.json", summary)
     return {
         **summary,
-        "output_dir": str(output_dir.relative_to(ROOT)),
+        "output_dir": display_output_dir(output_dir),
     }
 
 
@@ -300,5 +323,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

@@ -15,22 +15,60 @@ SEGMENT_FIELDS = [
     "男生原回复",
     "原回复评价",
     "聊天阶段",
+    "接触状态",
+    "关系推进目标",
     "女生状态",
     "男生目标",
     "推荐策略",
     "风险类型",
     "回复强度",
+    "高热度信号",
     "次要标签",
     "更优回复",
     "迁移学习价值",
 ]
 
 TRANSFER_VALUE_KEYWORDS = ["迁移", "学习", "价值", "复用", "可复用", "借鉴", "值得"]
+DEFAULT_HEAT_SIGNAL_VALUES = ["无", "亲密称呼", "暧昧试探", "性张力玩笑", "身体接触意象", "关系想象", "线下亲密伏笔", "亲密升级信号", "性关系意向"]
+HEAT_SIGNAL_VALUES = DEFAULT_HEAT_SIGNAL_VALUES
 
 
 def taxonomy() -> dict[str, list[str]]:
     labels = load_config("taxonomy_v01.json").get("labels", {})
     return labels if isinstance(labels, dict) else {}
+
+
+def aliases() -> dict[str, dict[str, str]]:
+    raw = load_config("taxonomy_v01.json").get("aliases", {})
+    if not isinstance(raw, dict):
+        return {}
+    output: dict[str, dict[str, str]] = {}
+    for field, values in raw.items():
+        if isinstance(values, dict):
+            output[str(field)] = {str(key): str(value) for key, value in values.items()}
+    return output
+
+
+def heat_signal_values() -> list[str]:
+    values = load_config("taxonomy_v01.json").get("heat_signals", DEFAULT_HEAT_SIGNAL_VALUES)
+    if not isinstance(values, list):
+        return DEFAULT_HEAT_SIGNAL_VALUES
+    cleaned = [str(item) for item in values if str(item)]
+    return cleaned or DEFAULT_HEAT_SIGNAL_VALUES
+
+
+def normalize_label_value(field: str, value: Any, allowed: list[str] | None = None) -> Any:
+    allowed = allowed if allowed is not None else taxonomy().get(field, [])
+    text = str(value or "").strip()
+    text = aliases().get(field, {}).get(text, text)
+    return text if text in allowed else allowed[0] if allowed else ""
+
+
+def normalize_heat_signal(value: Any) -> str:
+    allowed = heat_signal_values()
+    text = str(value or "").strip()
+    text = aliases().get("高热度信号", {}).get(text, text)
+    return text if text in allowed else "无"
 
 
 def normalize_segment(segment: dict[str, Any], case_id: str, index: int) -> dict[str, Any]:
@@ -51,8 +89,8 @@ def normalize_segment(segment: dict[str, Any], case_id: str, index: int) -> dict
         if field == "风险类型":
             output[field] = [item for item in output.get(field, []) if item in allowed]
             continue
-        if output.get(field) not in allowed:
-            output[field] = allowed[0] if allowed else ""
+        output[field] = normalize_label_value(field, output.get(field), allowed)
+    output["高热度信号"] = normalize_heat_signal(output.get("高热度信号"))
     output["次要标签"] = normalize_secondary_labels(segment.get("次要标签", {}), labels)
     output["quality_status"] = str(segment.get("quality_status") or "draft")
     output["need_human_review"] = bool(segment.get("need_human_review", False))
@@ -86,7 +124,7 @@ def normalize_secondary_labels(value: Any, labels: dict[str, list[str]]) -> dict
                 current = []
             output[field] = [item for item in current if item in allowed]
             continue
-        output[field] = current if current in allowed else ""
+        output[field] = normalize_label_value(field, current, allowed) if current else ""
     output["说明"] = str(value.get("说明") or value.get("reason") or "")
     return output
 
@@ -110,6 +148,6 @@ def validate_segments(segments: list[dict[str, Any]]) -> list[dict[str, str]]:
         secondary = segment.get("次要标签", {})
         if secondary and not isinstance(secondary, dict):
             issues.append({"segment_id": segment_id, "field": "次要标签", "reason": "invalid_type"})
+        if segment.get("高热度信号") not in heat_signal_values():
+            issues.append({"segment_id": segment_id, "field": "高热度信号", "reason": f"invalid: {segment.get('高热度信号')}"})
     return issues
-
-

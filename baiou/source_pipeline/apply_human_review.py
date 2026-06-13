@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from baiou.common.io import PROJECT_ROOT, read_json as read_json_file
 from baiou.common.io import write_json as write_json_file
 
+from .config_loader import load_config
 from .utils import remove_adjacent_cross_block_duplicate_turns
 
 
@@ -60,6 +61,23 @@ SPEAKER_PREFIX = {
 }
 
 
+def postprocess_rules() -> dict[str, Any]:
+    return load_config("postprocess_rules.yaml")
+
+
+def is_system_text(text: str, rules: dict[str, Any] | None = None) -> bool:
+    rules = rules or postprocess_rules()
+    compact = str(text or "").strip()
+    if not compact:
+        return False
+    exact_values = {str(item).strip() for item in rules.get("system_text_exact", []) if str(item).strip()}
+    if compact in exact_values:
+        return True
+    if any(str(item).strip() and str(item).strip() in compact for item in rules.get("system_text_contains", [])):
+        return True
+    return any(re.fullmatch(str(pattern), compact) for pattern in rules.get("system_time_patterns", []) if str(pattern).strip())
+
+
 def read_json(path: Path) -> Any:
     return read_json_file(path)
 
@@ -97,14 +115,16 @@ def is_empty_marker(text: str) -> bool:
 def parse_manual_turns(text: str, default_speaker: str) -> list[dict[str, str]]:
     turns: list[dict[str, str]] = []
     current_time = ""
+    rules = postprocess_rules()
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if re.fullmatch(r"\d{4}年\d{1,2}月\d{1,2}日\s*(上午|下午|晚上|中午)?\d{1,2}:\d{2}", line):
+        if is_system_text(line, rules):
+            turns.append({"speaker": "system", "text": line, "time": current_time})
             current_time = line
             continue
-        match = re.match(r"^(男生|女生|男|女|旁白|系统)\s*[:：]\s*(.*)$", line)
+        match = re.match(r"^(男生|女生|男|女|旁白|系统)\s*[:：;；]\s*(.*)$", line)
         if match:
             turns.append(
                 {
@@ -114,11 +134,58 @@ def parse_manual_turns(text: str, default_speaker: str) -> list[dict[str, str]]:
                 }
             )
             continue
+        loose_match = re.match(r"^(男|女)(\S.*)$", line)
+        if loose_match:
+            turns.append(
+                {
+                    "speaker": SPEAKER_PREFIX.get(loose_match.group(1), default_speaker or "unknown"),
+                    "text": loose_match.group(2).strip(),
+                    "time": current_time,
+                }
+            )
+            continue
         if turns:
             turns[-1]["text"] = f"{turns[-1]['text']}\n{line}".strip()
         else:
             turns.append({"speaker": default_speaker or "unknown", "text": line, "time": current_time})
     return [turn for turn in turns if turn["text"]]
+
+
+def content_type_for_manual_turn(manual_turn: dict[str, str], choice: str) -> str:
+    if manual_turn.get("speaker") == "system":
+        return "system"
+    return CHOICE_TO_CONTENT_TYPE.get(choice, "text")
+
+
+def visual_note_for_manual_turn(manual_turn: dict[str, str], choice: str) -> str:
+    if manual_turn.get("speaker") == "system":
+        return "系统提示"
+    return CHOICE_TO_VISUAL_NOTE.get(choice, "")
+
+
+def manual_turn_payload(
+    blocks: list[dict[str, Any]],
+    block: dict[str, Any],
+    block_id: str,
+    manual_turn: dict[str, str],
+    choice: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "turn_id": next_turn_id(blocks),
+        "speaker": manual_turn["speaker"],
+        "text": manual_turn["text"],
+        "time": manual_turn.get("time", ""),
+        "confidence": "human",
+        "reason": reason,
+        "source_block_id": block_id,
+        "source_image": block.get("source_image", ""),
+        "crop_box": block.get("crop_box", []),
+        "need_review": False,
+        "content_type": content_type_for_manual_turn(manual_turn, choice),
+        "visual_note": visual_note_for_manual_turn(manual_turn, choice),
+        "notes": "human_review_applied",
+    }
 
 
 def rows_from_xlsx(path: Path) -> list[dict[str, Any]]:
@@ -205,6 +272,26 @@ def apply_rows(batch_dir: Path, review_path: Path) -> dict[str, Any]:
                             applied += 1
                             touched.add(case_id)
                             break
+                        manual_turns = parse_manual_turns(corrected_text, target_speaker or str(turn.get("speaker", "unknown"))) if corrected_text else []
+                        if manual_turns and (len(manual_turns) > 1 or any(item.get("speaker") != turn.get("speaker") for item in manual_turns)):
+                            insert_at = turns.index(turn)
+                            turns.pop(insert_at)
+                            for manual_turn in manual_turns:
+                                turns.insert(
+                                    insert_at,
+                                    manual_turn_payload(
+                                        blocks,
+                                        block,
+                                        block_id,
+                                        manual_turn,
+                                        choice,
+                                        f"manual replacement for {review_type}",
+                                    ),
+                                )
+                                insert_at += 1
+                            applied += 1
+                            touched.add(case_id)
+                            break
                         if target_speaker:
                             turn["speaker"] = target_speaker
                         content_type = CHOICE_TO_CONTENT_TYPE.get(choice, "")
@@ -236,31 +323,23 @@ def apply_rows(batch_dir: Path, review_path: Path) -> dict[str, Any]:
                         applied += 1
                         touched.add(case_id)
 
-        if review_type == "model_blocked_block" and corrected_text:
+        if review_type == "model_blocked_block" and (corrected_text or choice == "跳过"):
             block = ensure_block(blocks, batch_dir, case_id, block_id)
-            if not is_empty_marker(corrected_text):
+            if corrected_text and not is_empty_marker(corrected_text):
                 default_speaker = corrected_speaker or CHOICE_TO_SPEAKER.get(choice, "unknown")
                 if choice in STICKER_CHOICES and is_empty_marker(corrected_text):
                     corrected_text = "男生：[表情包]" if default_speaker == "male" else "女生：[表情包]"
                 for manual_turn in parse_manual_turns(corrected_text, default_speaker):
-                    block.setdefault("turns", []).append(
-                        {
-                            "turn_id": next_turn_id(blocks),
-                            "speaker": manual_turn["speaker"],
-                            "text": manual_turn["text"],
-                            "time": manual_turn.get("time", ""),
-                            "confidence": "human",
-                            "reason": "manual transcript for model-blocked image",
-                            "source_block_id": block_id,
-                            "source_image": block.get("source_image", ""),
-                            "crop_box": block.get("crop_box", []),
-                            "need_review": False,
-                            "content_type": CHOICE_TO_CONTENT_TYPE.get(choice, "text"),
-                            "visual_note": CHOICE_TO_VISUAL_NOTE.get(choice, ""),
-                            "notes": "human_review_applied; original model call blocked by provider safety policy"
-                            + (f"; human_review: {CHOICE_TO_CONTENT_TYPE.get(choice)}" if CHOICE_TO_CONTENT_TYPE.get(choice) else ""),
-                        }
+                    payload = manual_turn_payload(
+                        blocks,
+                        block,
+                        block_id,
+                        manual_turn,
+                        choice,
+                        "manual transcript for model-blocked image",
                     )
+                    payload["notes"] = "human_review_applied; original model call blocked by provider safety policy"
+                    block.setdefault("turns", []).append(payload)
                 block["extracted_text"] = corrected_text
             else:
                 block["extracted_text"] = ""
@@ -355,8 +434,15 @@ def refresh_case_quality(batch_dir: Path, case: dict[str, Any]) -> dict[str, Any
 
 
 def ensure_content_fields(blocks: list[dict[str, Any]]) -> None:
+    rules = postprocess_rules()
     for block in blocks:
         for turn in block.get("turns", []):
+            if is_system_text(str(turn.get("text", "")), rules):
+                turn["speaker"] = "system"
+                turn["content_type"] = "system"
+                turn["visual_note"] = "系统提示"
+                turn["need_review"] = False
+                continue
             if turn.get("content_type"):
                 if (
                     turn.get("content_type") == "image"
@@ -483,5 +569,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

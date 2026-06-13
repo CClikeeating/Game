@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from baiou.common.io import PROJECT_ROOT, read_json, write_json
 from baiou.case_pipeline.common import OUTPUT_ROOT
 from baiou.case_pipeline.production.disabled_summary import write_disabled_summary
+from baiou.case_pipeline.schema import normalize_heat_signal, normalize_label_value, taxonomy
 
 CORRECTABLE_FIELDS = [
     "当前上下文",
@@ -17,11 +18,14 @@ CORRECTABLE_FIELDS = [
     "男生原回复",
     "原回复评价",
     "聊天阶段",
+    "接触状态",
+    "关系推进目标",
     "女生状态",
     "男生目标",
     "推荐策略",
     "风险类型",
     "回复强度",
+    "高热度信号",
     "次要标签",
     "更优回复",
     "迁移学习价值",
@@ -207,6 +211,10 @@ def principle_note(row: dict[str, Any]) -> str:
     return str(row.get("人工原则备注") or "").strip()
 
 
+def manual_label_value(row: dict[str, Any], field: str) -> str:
+    return str(row.get(f"人工{field}") or "").strip()
+
+
 def has_user_input(row: dict[str, Any]) -> bool:
     return any(
         [
@@ -216,6 +224,8 @@ def has_user_input(row: dict[str, Any]) -> bool:
             reply_correction(row),
             label_correction(row),
             principle_note(row),
+            manual_label_value(row, "接触状态"),
+            manual_label_value(row, "关系推进目标"),
         ]
     )
 
@@ -235,16 +245,19 @@ def apply_model_review_suggestions(segment: dict[str, Any]) -> None:
 
 def rows_from_workbook(path: Path) -> list[dict[str, Any]]:
     wb = load_workbook(path)
-    ws = wb["segments_review"]
-    headers = [cell.value for cell in ws[1]]
     meta = review_meta(wb)
     rows = []
-    for values in ws.iter_rows(min_row=2, values_only=True):
-        row = {str(headers[index]): value for index, value in enumerate(values)}
-        key = str(row.get("review_id") or "")
-        if key in meta:
-            row.update({k: v for k, v in meta[key].items() if v and not row.get(k)})
-        rows.append(row)
+    for sheet_name in ["segments_review", "optional_review"]:
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        headers = [cell.value for cell in ws[1]]
+        for values in ws.iter_rows(min_row=2, values_only=True):
+            row = {str(headers[index]): value for index, value in enumerate(values)}
+            key = str(row.get("review_id") or "")
+            if key in meta:
+                row.update({k: v for k, v in meta[key].items() if v and not row.get(k)})
+            rows.append(row)
     return rows
 
 
@@ -271,6 +284,11 @@ def apply_manual_review_fields(segment: dict[str, Any], row: dict[str, Any]) -> 
     labels = label_correction(row)
     if labels and apply_label_correction(segment, labels):
         applied = True
+    for field in ["接触状态", "关系推进目标"]:
+        value = manual_label_value(row, field)
+        if value:
+            segment[field] = normalize_value(field, value)
+            applied = True
     note = principle_note(row)
     if note:
         segment["人工原则备注"] = note
@@ -342,6 +360,8 @@ def apply_dotted_field(segment: dict[str, Any], field: str, value: Any) -> None:
 
 
 def normalize_value(field: str, value: Any) -> Any:
+    if field == "高热度信号":
+        return normalize_heat_signal(value)
     if field == "风险类型":
         if isinstance(value, list):
             return value
@@ -354,6 +374,8 @@ def normalize_value(field: str, value: Any) -> Any:
         except json.JSONDecodeError:
             return {"说明": str(value)}
         return parsed if isinstance(parsed, dict) else {"说明": str(value)}
+    if field in taxonomy():
+        return normalize_label_value(field, value)
     return value
 
 
@@ -385,5 +407,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
