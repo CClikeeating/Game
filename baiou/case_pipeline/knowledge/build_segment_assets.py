@@ -183,6 +183,8 @@ def skipped_row(row: dict[str, Any], reason: str) -> dict[str, Any]:
 def segment_asset_row(segment: dict[str, Any], outline: dict[str, Any], index: int) -> dict[str, Any]:
     labels = {
         "聊天阶段": segment.get("聊天阶段", ""),
+        "接触状态": segment.get("接触状态", "未知"),
+        "关系推进目标": segment.get("关系推进目标", "无"),
         "女生状态": segment.get("女生状态", ""),
         "男生目标": segment.get("男生目标", ""),
         "推荐策略": segment.get("推荐策略", ""),
@@ -190,6 +192,7 @@ def segment_asset_row(segment: dict[str, Any], outline: dict[str, Any], index: i
         "回复强度": segment.get("回复强度", ""),
     }
     secondary_labels = segment.get("次要标签", {}) if isinstance(segment.get("次要标签", {}), dict) else {}
+    heat_signal = str(segment.get("高热度信号", "无") or "无")
     row = {
         "schema_version": "segment_asset_v01",
         "case_id": segment.get("case_id", ""),
@@ -197,6 +200,7 @@ def segment_asset_row(segment: dict[str, Any], outline: dict[str, Any], index: i
         "segment_index": index,
         "source_turn_ids": segment.get("source_turn_ids", []),
         "labels": labels,
+        "高热度信号": heat_signal,
         "secondary_labels": secondary_labels,
         "case_summary": outline.get("case_summary", ""),
         "stage_path": outline.get("stage_path", []),
@@ -333,6 +337,7 @@ def experience_row(row: dict[str, Any]) -> dict[str, Any]:
         "original_reply_review": row.get("原回复评价", ""),
         "better_reply": row.get("更优回复", ""),
         "transfer_value": row.get("迁移学习价值", ""),
+        "heat_signal": row.get("高热度信号", "无"),
         "transferable_rule": infer_transferable_rule(row),
         "search_text": row.get("search_text", ""),
     }
@@ -353,6 +358,9 @@ def render_segment_markdown(row: dict[str, Any], max_text_chars: int) -> str:
         "",
         "## 次要标签",
         json.dumps(secondary_labels, ensure_ascii=False, indent=2),
+        "",
+        "## 高热度信号",
+        trim(row.get("高热度信号", "无"), max_text_chars),
         "",
         "## 当前上下文",
         trim(row.get("当前上下文", ""), max_text_chars),
@@ -393,7 +401,7 @@ def infer_transferable_rule(row: dict[str, Any]) -> str:
 def build_tags(row: dict[str, Any]) -> list[str]:
     labels = row.get("labels", {}) if isinstance(row.get("labels", {}), dict) else {}
     tags = []
-    for key in ["聊天阶段", "女生状态", "男生目标", "推荐策略", "回复强度"]:
+    for key in ["聊天阶段", "接触状态", "关系推进目标", "女生状态", "男生目标", "推荐策略", "回复强度"]:
         value = str(labels.get(key, "")).strip()
         if value:
             tags.append(value)
@@ -401,8 +409,11 @@ def build_tags(row: dict[str, Any]) -> list[str]:
         text = str(risk).strip()
         if text:
             tags.append(text)
+    heat_signal = str(row.get("高热度信号", "")).strip()
+    if heat_signal and heat_signal != "无":
+        tags.append(heat_signal)
     secondary_labels = row.get("secondary_labels", {}) if isinstance(row.get("secondary_labels", {}), dict) else {}
-    for key in ["聊天阶段", "女生状态", "男生目标", "推荐策略", "回复强度"]:
+    for key in ["聊天阶段", "接触状态", "关系推进目标", "女生状态", "男生目标", "推荐策略", "回复强度"]:
         value = str(secondary_labels.get(key, "")).strip()
         if value:
             tags.append(f"次要:{value}")
@@ -418,6 +429,7 @@ def build_search_text(row: dict[str, Any]) -> str:
         row.get("case_id", ""),
         row.get("segment_id", ""),
         " ".join(row.get("tags", [])),
+        row.get("高热度信号", ""),
         json.dumps(row.get("secondary_labels", {}), ensure_ascii=False),
         row.get("case_summary", ""),
         row.get("当前上下文", ""),

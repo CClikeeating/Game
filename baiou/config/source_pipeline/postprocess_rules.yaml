@@ -15,9 +15,21 @@
   "valid_speakers": ["male", "female", "narration", "system", "unknown"],
   "review_speakers": ["unknown"],
   "valid_content_types": ["text", "sticker", "selfie_photo", "life_photo", "image", "narration", "system", "unknown"],
+  "system_text_exact": [
+    "以上是打招呼的内容",
+    "你已添加了，现在可以开始聊天了。"
+  ],
+  "system_text_contains": [
+    "你已添加了，现在可以开始聊天了"
+  ],
+  "system_time_patterns": [
+    "^(星期[一二三四五六日天]|周[一二三四五六日天])\\s*(上午|下午|晚上|中午|凌晨)?\\s*\\d{1,2}:\\d{2}$",
+    "^\\d{4}年\\d{1,2}月\\d{1,2}日\\s*(上午|下午|晚上|中午|凌晨)?\\s*\\d{1,2}:\\d{2}$",
+    "^(系统时间|时间)[:：]?\\s*(星期[一二三四五六日天]|周[一二三四五六日天])?\\s*(上午|下午|晚上|中午|凌晨)?\\s*\\d{1,2}:\\d{2}$",
+    "^(系统时间|时间)[:：]?\\s*\\d{4}年\\d{1,2}月\\d{1,2}日\\s*(上午|下午|晚上|中午|凌晨)?\\s*\\d{1,2}:\\d{2}$"
+  ],
   "sticker_keywords": ["表情包", "贴纸", "动态图"],
   "selfie_photo_keywords": ["自拍", "个人照片", "头像照"],
   "image_keywords": ["[图片]", "图片", "照片"]
 }
-
 

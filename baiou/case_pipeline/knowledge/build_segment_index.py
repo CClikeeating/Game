@@ -57,18 +57,22 @@ def case_dirs_for_batch(batch_root: Path, cases_root: Path) -> list[Path]:
 def index_row(segment: dict[str, Any], outline: dict[str, Any]) -> dict[str, Any]:
     labels = {
         "聊天阶段": segment.get("聊天阶段", ""),
+        "接触状态": segment.get("接触状态", "未知"),
+        "关系推进目标": segment.get("关系推进目标", "无"),
         "女生状态": segment.get("女生状态", ""),
         "男生目标": segment.get("男生目标", ""),
         "推荐策略": segment.get("推荐策略", ""),
         "风险类型": segment.get("风险类型", []),
         "回复强度": segment.get("回复强度", ""),
     }
+    heat_signal = str(segment.get("高热度信号", "无") or "无")
     secondary_labels = segment.get("次要标签", {}) if isinstance(segment.get("次要标签", {}), dict) else {}
     chunks = [
         segment.get("case_id", ""),
         segment.get("segment_id", ""),
         outline.get("case_summary", ""),
         " ".join(str(value) for value in labels.values()),
+        heat_signal,
         json.dumps(secondary_labels, ensure_ascii=False),
         segment.get("当前上下文", ""),
         segment.get("女生最后一句", ""),
@@ -82,6 +86,7 @@ def index_row(segment: dict[str, Any], outline: dict[str, Any]) -> dict[str, Any
         "segment_id": segment.get("segment_id", ""),
         "source_turn_ids": segment.get("source_turn_ids", []),
         "labels": labels,
+        "高热度信号": heat_signal,
         "secondary_labels": secondary_labels,
         "当前上下文": segment.get("当前上下文", ""),
         "女生最后一句": segment.get("女生最后一句", ""),
@@ -106,5 +111,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
