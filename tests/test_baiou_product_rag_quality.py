@@ -61,6 +61,8 @@ def test_bailian_quality_prompt_uses_soft_anchor_without_overconstraining() -> N
     assert "性张力玩笑" in prompt
     assert "女生/对方最后一句、当前句功能、推进尺度、建议手感" in prompt
     assert "除非软锚点判断为明确测试或证据很强" in prompt
+    assert "那聊点付费的" in prompt
+    assert "少用“奖励你”“给你机会”“乖”等训导感词" in prompt
 
 
 def test_quality_guidance_accepts_chat_level_sexual_tension_scale() -> None:
