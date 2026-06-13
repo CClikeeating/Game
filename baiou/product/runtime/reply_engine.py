@@ -16,6 +16,7 @@ from baiou.product.common import OUTPUT_ROOT, load_config, load_prompt, timestam
 
 MODE_QUALITY_LOCAL = "quality_local"
 MODE_BAILIAN_RAG_FAST = "bailian_rag_fast"
+MODE_BAILIAN_RAG_QUALITY = "bailian_rag_quality"
 
 DEFAULT_LABEL_ALIASES = {
     "聊天阶段": {
@@ -46,6 +47,12 @@ DEFAULT_LABEL_ALIASES = {
     },
 }
 
+IMAGE_INPUT_HINT = (
+    "回复定位要求：优先使用截图/图片理解里的说话人归属依据、女生/对方最后一句、男生/用户最近回复、"
+    "用户真正要回复的位置和当前可见局势；若存在“程序校正（优先使用）”，以程序校正为准；"
+    "默认左侧/白色气泡=女生或对方，右侧/绿色气泡=男生或用户。"
+)
+
 
 def run_reply(
     question: str,
@@ -60,13 +67,13 @@ def run_reply(
     output_dir = OUTPUT_ROOT / "runs" / batch_id / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     models = load_config("models.json")
-    user_id = str(models.get("user_id", "71"))
     runtime_mode = normalize_mode(mode)
+    user_id = resolve_user_id(models, runtime_mode)
     image_paths = [resolve_path(path) for path in (images or [])]
     image_data = image_payload(question, context, image_paths, models, user_id, dry_run)
     image_understanding = image_data.get("text", "")
     input_text = build_input_text(question, context, image_understanding)
-    if runtime_mode == MODE_BAILIAN_RAG_FAST:
+    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY}:
         return run_bailian_rag_fast(
             run_id,
             output_dir,
@@ -79,6 +86,7 @@ def run_reply(
             models,
             user_id,
             dry_run,
+            quality_mode=runtime_mode == MODE_BAILIAN_RAG_QUALITY,
         )
 
     label_prompt = build_label_prompt(input_text)
@@ -144,19 +152,37 @@ def run_bailian_rag_fast(
     models: dict[str, Any],
     user_id: str,
     dry_run: bool,
+    quality_mode: bool = False,
 ) -> dict[str, Any]:
-    reply_prompt = build_bailian_rag_prompt(input_text)
+    mode_name = MODE_BAILIAN_RAG_QUALITY if quality_mode else MODE_BAILIAN_RAG_FAST
+    label_result: dict[str, Any] = {}
+    quality_guidance: dict[str, Any] = {}
+    labels: dict[str, Any] = {}
+    if quality_mode:
+        if dry_run:
+            labels = heuristic_labels(input_text)
+            quality_guidance = heuristic_quality_guidance(input_text, labels)
+        else:
+            label_client = ChatJsonClient("reply_quality_label_model", quality_label_config(models), user_id)
+            label_result = label_client.chat_json("只输出合法 JSON。", build_quality_label_prompt(input_text))
+            quality_guidance = normalize_quality_guidance(label_result.get("parsed", {}))
+            labels = quality_guidance.get("labels", {}) if isinstance(quality_guidance.get("labels", {}), dict) else {}
+            labels = normalize_labels(labels) if labels else heuristic_labels(input_text)
+            quality_guidance["labels"] = labels
+    reply_prompt = build_bailian_rag_prompt(input_text, quality_guidance if quality_mode else None)
     if dry_run:
         preview = {
             "status": "dry_run",
-            "mode": MODE_BAILIAN_RAG_FAST,
+            "mode": mode_name,
             "run_id": run_id,
             "input_text": input_text,
             "images": [str(path) for path in image_paths],
             "image_understanding": image_understanding,
             "vision_result": image_data.get("model_result", {}),
-            "labels": {},
+            "labels": labels,
+            "quality_guidance": quality_guidance,
             "reference_segments": [],
+            "label_result": label_result,
             "reply_prompt": reply_prompt,
             "output_dir": str(output_dir),
         }
@@ -165,7 +191,11 @@ def run_bailian_rag_fast(
 
     rag_cfg, error = bailian_rag_config(models)
     if error:
-        summary = unavailable_bailian_summary(run_id, output_dir, question, context, image_paths, image_data, image_understanding, error)
+        summary = unavailable_bailian_summary(run_id, output_dir, question, context, image_paths, image_data, image_understanding, error, mode_name)
+        if quality_guidance:
+            summary["quality_guidance"] = quality_guidance
+        if label_result:
+            summary["label_result"] = compact_model_result(label_result)
         write_json(output_dir / "summary.json", summary)
         return summary
 
@@ -180,7 +210,7 @@ def run_bailian_rag_fast(
     answer = normalize_reply_result(parsed, labels, references)
     summary = {
         "status": reply_result.get("status", ""),
-        "mode": MODE_BAILIAN_RAG_FAST,
+        "mode": mode_name,
         "run_id": run_id,
         "question": question,
         "context": context,
@@ -188,8 +218,10 @@ def run_bailian_rag_fast(
         "image_understanding": image_understanding,
         "vision_result": image_data.get("model_result", {}),
         "labels": answer.get("labels", {}),
+        "quality_guidance": quality_guidance,
         "reference_segments": references,
         "answer": answer,
+        "label_result": compact_model_result(label_result) if label_result else {},
         "reply_result": compact_model_result(reply_result),
         "output_dir": str(output_dir),
     }
@@ -206,10 +238,11 @@ def unavailable_bailian_summary(
     image_data: dict[str, Any],
     image_understanding: str,
     error: str,
+    mode: str = MODE_BAILIAN_RAG_FAST,
 ) -> dict[str, Any]:
     return {
         "status": "model_unavailable",
-        "mode": MODE_BAILIAN_RAG_FAST,
+        "mode": mode,
         "error": error,
         "run_id": run_id,
         "question": question,
@@ -260,7 +293,7 @@ def build_input_text(question: str, context: str, image_understanding: str = "")
     if context.strip():
         parts.extend(["\n补充背景：", context.strip()])
     if image_understanding.strip():
-        parts.extend(["\n截图/图片理解：", image_understanding.strip()])
+        parts.extend(["\n截图/图片理解：", IMAGE_INPUT_HINT, image_understanding.strip()])
     return "\n".join(parts)
 
 
@@ -270,6 +303,22 @@ def build_label_prompt(input_text: str) -> str:
     return "\n\n".join(
         [
             load_prompt("reply_label_v01.md"),
+            "标签枚举：",
+            json.dumps(taxonomy.get("labels", {}), ensure_ascii=False, indent=2),
+            "原则：",
+            json.dumps(principles, ensure_ascii=False, indent=2),
+            "当前输入：",
+            input_text,
+        ]
+    )
+
+
+def build_quality_label_prompt(input_text: str) -> str:
+    taxonomy = load_config("taxonomy_v01.json")
+    principles = load_config("prompt_principles.json")
+    return "\n\n".join(
+        [
+            load_prompt("reply_quality_label_v01.md"),
             "标签枚举：",
             json.dumps(taxonomy.get("labels", {}), ensure_ascii=False, indent=2),
             "原则：",
@@ -298,23 +347,40 @@ def build_reply_prompt(input_text: str, labels: dict[str, Any], references: list
     )
 
 
-def build_bailian_rag_prompt(input_text: str) -> str:
+def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] | None = None) -> str:
     principles = load_config("prompt_principles.json")
-    return "\n\n".join(
-        [
-            load_prompt("reply_generate_v01.md"),
-            "原则：",
-            json.dumps(principles, ensure_ascii=False, indent=2),
-            "当前输入：",
-            input_text,
-            "知识库检索要求：",
-            "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。优先学习片段里的迁移学习价值、建议回复动作和风险提醒；不要照搬不适合当前语境的原句。",
-            "当前基础标签：",
-            "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
-            "相似结构化案例片段：",
-            "由百炼 file_search 工具返回；如果没有命中，也要基于原则给出保守、自然的回复。",
-        ]
-    )
+    parts = [
+        load_prompt("reply_generate_v01.md"),
+        "原则：",
+        json.dumps(principles, ensure_ascii=False, indent=2),
+        "当前输入：",
+        input_text,
+    ]
+    if quality_guidance:
+        parts.extend(
+            [
+                "当前基础标签与软锚点：",
+                json.dumps(quality_guidance, ensure_ascii=False, indent=2),
+                "软锚点使用方式：",
+                "软锚点用于减少过度解读，不是保守限制。保持自然、有趣、可推进；推进空间低时降低强撩和强邀约，推进空间中/高时可以轻微升温、暧昧试探或边界内的性张力玩笑。",
+                "知识库检索要求：",
+                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。检索词优先围绕女生/对方最后一句、当前句功能、推进尺度、建议手感和关键事实；不要主动加入“废物测试/强框架/反击”等词，除非软锚点判断为明确测试或证据很强。优先学习片段里的动作和节奏，不要照搬不适合当前语境的原句。",
+                "相似结构化案例片段：",
+                "由百炼 file_search 工具返回；如果没有命中，也要基于软锚点和原则给出自然、可推进的回复。",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "知识库检索要求：",
+                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。优先学习片段里的迁移学习价值、建议回复动作和风险提醒；不要照搬不适合当前语境的原句。普通撒娇、接话、解释或收尾，不要仅凭单句就主动检索为废物测试或强框架对抗。",
+                "当前基础标签：",
+                "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
+                "相似结构化案例片段：",
+                "由百炼 file_search 工具返回；如果没有命中，也要基于原则给出保守、自然的回复。",
+            ]
+        )
+    return "\n\n".join(parts)
 
 
 def normalize_mode(value: str | None) -> str:
@@ -322,9 +388,43 @@ def normalize_mode(value: str | None) -> str:
     if not mode:
         runtime = load_config("web.json").get("runtime", {})
         mode = str(runtime.get("default_mode", MODE_QUALITY_LOCAL)).strip().lower()
-    aliases = {"quality": MODE_QUALITY_LOCAL, "local": MODE_QUALITY_LOCAL, "rag": MODE_BAILIAN_RAG_FAST}
+    aliases = {
+        "quality": MODE_QUALITY_LOCAL,
+        "local": MODE_QUALITY_LOCAL,
+        "rag": MODE_BAILIAN_RAG_FAST,
+        "rag_fast": MODE_BAILIAN_RAG_FAST,
+        "rag_quality": MODE_BAILIAN_RAG_QUALITY,
+        "bailian_quality": MODE_BAILIAN_RAG_QUALITY,
+    }
     mode = aliases.get(mode, mode)
-    return mode if mode in {MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST} else MODE_QUALITY_LOCAL
+    return mode if mode in {MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY} else MODE_QUALITY_LOCAL
+
+
+def resolve_user_id(models: dict[str, Any], mode: str) -> str:
+    env_mode = f"BAIOU_PRODUCT_USER_ID_{mode.upper()}"
+    env_mode = env_mode.replace("-", "_")
+    for name in [env_mode, "BAIOU_PRODUCT_USER_ID"]:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    user_ids = models.get("user_ids", {}) if isinstance(models.get("user_ids"), dict) else {}
+    if str(user_ids.get(mode, "")).strip():
+        return str(user_ids[mode]).strip()
+    if str(user_ids.get("default", "")).strip():
+        return str(user_ids["default"]).strip()
+    return str(models.get("user_id", "71"))
+
+
+def quality_label_config(models: dict[str, Any]) -> dict[str, Any]:
+    configured = models.get("reply_quality_label_model")
+    if isinstance(configured, dict) and configured:
+        return configured
+    cfg = json.loads(json.dumps(models.get("reply_model") or {}))
+    cfg["temperature"] = 0
+    cfg["max_tokens"] = min(int(cfg.get("max_tokens", 1200)), 1200)
+    cfg["enable_thinking"] = False
+    cfg["response_format_json"] = True
+    return cfg
 
 
 def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -357,6 +457,55 @@ def extract_labels(parsed: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(labels, dict):
         return {}
     return normalize_labels(labels)
+
+
+def normalize_quality_guidance(parsed: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {}
+    output = {
+        "labels": extract_labels(parsed),
+        "当前句功能": normalize_choice(parsed.get("当前句功能"), ["普通接话", "撒娇", "轻微试探", "明确测试", "收尾", "降压"]),
+        "推进空间": normalize_choice(parsed.get("推进空间"), ["低", "中", "高"]),
+        "推进尺度": normalize_choice(
+            parsed.get("推进尺度"),
+            ["低压力承接", "轻微调侃", "情绪升温", "暧昧试探", "性张力玩笑", "模糊邀约", "明确邀约", "降压收住"],
+        ),
+        "建议手感": normalize_choice(parsed.get("建议手感"), ["自然", "松弛", "俏皮", "暧昧但不油", "有边界地推进", "降压"]),
+        "判断依据": str(parsed.get("判断依据", "")).strip(),
+    }
+    return {key: value for key, value in output.items() if value not in ("", [], {})}
+
+
+def normalize_choice(value: Any, allowed: list[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text in allowed:
+        return text
+    for item in allowed:
+        if item in text or text in item:
+            return item
+    return text
+
+
+def heuristic_quality_guidance(text: str, labels: dict[str, Any]) -> dict[str, Any]:
+    female_state = labels.get("女生状态", "")
+    if female_state in {"冷淡", "防御", "拒绝"}:
+        function, space, scale, feel = "降压", "低", "降压收住", "降压"
+    elif any(word in text for word in ["嗯嗯", "好的", "先这样", "下次"]):
+        function, space, scale, feel = "收尾", "低", "低压力承接", "自然"
+    elif any(word in text for word in ["想你", "梦到", "喜欢", "礼物", "想和你聊"]):
+        function, space, scale, feel = "撒娇", "中", "情绪升温", "俏皮"
+    else:
+        function, space, scale, feel = "普通接话", "中", "轻微调侃", "松弛"
+    return {
+        "labels": labels,
+        "当前句功能": function,
+        "推进空间": space,
+        "推进尺度": scale,
+        "建议手感": feel,
+        "判断依据": "dry-run 启发式软锚点。",
+    }
 
 
 def normalize_labels(labels: dict[str, Any]) -> dict[str, Any]:
@@ -519,7 +668,7 @@ def main() -> None:
     parser.add_argument("--index-path")
     parser.add_argument("--batch-id", default="reply_runs")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--mode", choices=[MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST])
+    parser.add_argument("--mode", choices=[MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY])
     args = parser.parse_args()
     output = json.dumps(
         run_reply(args.question, args.context, args.image, args.index_path, args.batch_id, args.dry_run, args.mode),
@@ -535,5 +684,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
