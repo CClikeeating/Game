@@ -22,8 +22,13 @@ DEFAULT_LABEL_ALIASES = {
     "聊天阶段": {
         "初识": "刚认识",
         "破冰": "破冰期",
+        "邀约期": "高意向推进期",
         "暧昧升温": "暧昧升温期",
         "暧昧": "暧昧升温期",
+    },
+    "关系推进目标": {
+        "亲密升级": "亲密升级推进",
+        "性关系": "性关系推进",
     },
     "男生目标": {
         "维持框架": "升温",
@@ -36,6 +41,7 @@ DEFAULT_LABEL_ALIASES = {
         "推拉": "轻微调侃",
         "调侃": "轻微调侃",
         "升温": "情绪升温",
+        "性张力": "性张力玩笑",
     },
     "回复强度": {
         "低": "安全",
@@ -44,6 +50,10 @@ DEFAULT_LABEL_ALIASES = {
         "中等": "调侃",
         "高": "推进",
         "强": "推进",
+    },
+    "高热度信号": {
+        "亲密升级": "亲密升级信号",
+        "性张力": "性张力玩笑",
     },
 }
 
@@ -303,8 +313,8 @@ def build_label_prompt(input_text: str) -> str:
     return "\n\n".join(
         [
             load_prompt("reply_label_v01.md"),
-            "标签枚举：",
-            json.dumps(taxonomy.get("labels", {}), ensure_ascii=False, indent=2),
+            "标签配置：",
+            json.dumps(prompt_taxonomy_config(taxonomy), ensure_ascii=False, indent=2),
             "原则：",
             json.dumps(principles, ensure_ascii=False, indent=2),
             "当前输入：",
@@ -319,14 +329,22 @@ def build_quality_label_prompt(input_text: str) -> str:
     return "\n\n".join(
         [
             load_prompt("reply_quality_label_v01.md"),
-            "标签枚举：",
-            json.dumps(taxonomy.get("labels", {}), ensure_ascii=False, indent=2),
+            "标签配置：",
+            json.dumps(prompt_taxonomy_config(taxonomy), ensure_ascii=False, indent=2),
             "原则：",
             json.dumps(principles, ensure_ascii=False, indent=2),
             "当前输入：",
             input_text,
         ]
     )
+
+
+def prompt_taxonomy_config(taxonomy: dict[str, Any]) -> dict[str, Any]:
+    output = {"labels": taxonomy.get("labels", {})}
+    heat_signals = taxonomy.get("heat_signals", [])
+    if isinstance(heat_signals, list) and heat_signals:
+        output["heat_signals"] = heat_signals
+    return output
 
 
 def build_reply_prompt(input_text: str, labels: dict[str, Any], references: list[dict[str, Any]]) -> str:
@@ -511,7 +529,7 @@ def heuristic_quality_guidance(text: str, labels: dict[str, Any]) -> dict[str, A
 def normalize_labels(labels: dict[str, Any]) -> dict[str, Any]:
     config = load_config("taxonomy_v01.json")
     taxonomy = config.get("labels", {})
-    aliases = merged_label_aliases(config.get("label_aliases", {}))
+    aliases = merged_label_aliases(config)
     output = {}
     for field, allowed in taxonomy.items():
         value = labels.get(field, [] if field == "风险类型" else "")
@@ -523,13 +541,26 @@ def normalize_labels(labels: dict[str, Any]) -> dict[str, Any]:
             output[field] = [normalized for item in value for normalized in [normalize_label_value(field, item, allowed, aliases)] if normalized]
         else:
             output[field] = normalize_label_value(field, value, allowed, aliases) or (allowed[0] if allowed else "")
+    heat_signals = config.get("heat_signals", ["无"])
+    if not isinstance(heat_signals, list):
+        heat_signals = ["无"]
+    output["高热度信号"] = normalize_label_value("高热度信号", labels.get("高热度信号", ""), heat_signals, aliases) or "无"
     return output
 
 
 def merged_label_aliases(configured: Any) -> dict[str, dict[str, str]]:
     aliases = json.loads(json.dumps(DEFAULT_LABEL_ALIASES))
-    if isinstance(configured, dict):
-        for field, values in configured.items():
+    if not isinstance(configured, dict):
+        return aliases
+    sources = []
+    if isinstance(configured.get("aliases"), dict):
+        sources.append(configured.get("aliases", {}))
+    if isinstance(configured.get("label_aliases"), dict):
+        sources.append(configured.get("label_aliases", {}))
+    if not sources:
+        sources.append(configured)
+    for source in sources:
+        for field, values in source.items():
             if not isinstance(values, dict):
                 continue
             aliases.setdefault(str(field), {}).update({str(key): str(value) for key, value in values.items()})
@@ -554,12 +585,21 @@ def normalize_label_value(field: str, value: Any, allowed: list[str], aliases: d
 
 def heuristic_labels(text: str) -> dict[str, Any]:
     stage = "熟悉期"
+    contact_status = "未知"
+    relationship_goal = "无"
+    heat_signal = "无"
     if any(word in text for word in ["刚加", "刚认识", "匹配", "第一次聊"]):
         stage = "刚认识"
+        relationship_goal = "破冰熟悉"
     elif is_invite_context(text):
-        stage = "邀约期"
+        stage = "高意向推进期"
+        contact_status = "已邀约未见面"
+        relationship_goal = "邀约见面"
     elif any(word in text for word in ["想你", "暧昧", "喜欢", "宝宝"]):
         stage = "暧昧升温期"
+        relationship_goal = "暧昧升温"
+        if "宝宝" in text:
+            heat_signal = "亲密称呼"
 
     female_state = "正常"
     if any(word in text for word in ["拒绝", "不想", "算了", "别", "不要"]):
@@ -573,18 +613,34 @@ def heuristic_labels(text: str) -> dict[str, Any]:
     strategy = "话题延展"
     risks: list[str] = []
     strength = "轻松"
-    if stage == "邀约期":
+    if stage == "高意向推进期":
         goal = "邀约"
         strategy = "模糊邀约"
     if female_state in {"冷淡", "防御", "拒绝"}:
         goal = "降压"
         strategy = "主动降压"
+        relationship_goal = "降压修复"
         strength = "安全"
+    if any(word in text for word in ["性张力", "暧昧玩笑", "撩一下"]):
+        strategy = "性张力玩笑"
+        heat_signal = "性张力玩笑"
     if text.count("?") + text.count("？") >= 2:
         risks.extend(["查户口", "连续追问"])
     if len(text) > 500:
         risks.append("长篇大论")
-    return normalize_labels({"聊天阶段": stage, "女生状态": female_state, "男生目标": goal, "推荐策略": strategy, "风险类型": risks, "回复强度": strength})
+    return normalize_labels(
+        {
+            "聊天阶段": stage,
+            "接触状态": contact_status,
+            "关系推进目标": relationship_goal,
+            "女生状态": female_state,
+            "男生目标": goal,
+            "推荐策略": strategy,
+            "风险类型": risks,
+            "回复强度": strength,
+            "高热度信号": heat_signal,
+        }
+    )
 
 
 def is_invite_context(text: str) -> bool:
@@ -601,6 +657,7 @@ def compact_reference(item: dict[str, Any]) -> dict[str, Any]:
         "case_id": item.get("case_id", ""),
         "segment_id": item.get("segment_id", ""),
         "labels": item.get("labels", {}),
+        "高热度信号": item.get("高热度信号", ""),
         "secondary_labels": item.get("secondary_labels", {}),
         "女生最后一句": item.get("女生最后一句", ""),
         "男生原回复": item.get("男生原回复", ""),

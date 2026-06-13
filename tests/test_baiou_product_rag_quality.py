@@ -33,6 +33,9 @@ def test_quality_guidance_is_lightweight_soft_anchor() -> None:
     )
 
     assert guidance["labels"]["聊天阶段"] == "刚认识"
+    assert guidance["labels"]["接触状态"] == "未知"
+    assert guidance["labels"]["关系推进目标"] == "无"
+    assert guidance["labels"]["高热度信号"] == "无"
     assert guidance["当前句功能"] == "撒娇"
     assert guidance["推进空间"] == "中"
     assert guidance["推进尺度"] == "情绪升温"
@@ -63,7 +66,17 @@ def test_bailian_quality_prompt_uses_soft_anchor_without_overconstraining() -> N
 def test_quality_guidance_accepts_chat_level_sexual_tension_scale() -> None:
     guidance = normalize_quality_guidance(
         {
-            "labels": {"聊天阶段": "暧昧升温期", "女生状态": "热情", "男生目标": "升温", "推荐策略": "情绪升温", "风险类型": [], "回复强度": "暧昧"},
+            "labels": {
+                "聊天阶段": "暧昧升温期",
+                "接触状态": "已线下接触",
+                "关系推进目标": "亲密升级推进",
+                "女生状态": "热情",
+                "男生目标": "升温",
+                "推荐策略": "性张力玩笑",
+                "风险类型": [],
+                "回复强度": "暧昧",
+                "高热度信号": "性张力玩笑",
+            },
             "当前句功能": "轻微试探",
             "推进空间": "高",
             "推进尺度": "性张力玩笑",
@@ -74,3 +87,5 @@ def test_quality_guidance_accepts_chat_level_sexual_tension_scale() -> None:
 
     assert guidance["推进尺度"] == "性张力玩笑"
     assert guidance["建议手感"] == "暧昧但不油"
+    assert guidance["labels"]["推荐策略"] == "性张力玩笑"
+    assert guidance["labels"]["高热度信号"] == "性张力玩笑"
