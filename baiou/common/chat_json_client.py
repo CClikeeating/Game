@@ -41,6 +41,8 @@ class ChatJsonClient:
         }
         if self.config.get("response_format_json", False):
             payload["response_format"] = {"type": "json_object"}
+        if "enable_thinking" in self.config:
+            payload["enable_thinking"] = bool(self.config["enable_thinking"])
         url = str(self.config["base_url"]).rstrip("/") + "/chat/completions"
         request = urllib.request.Request(
             url,
@@ -97,5 +99,4 @@ def parse_json_content(content: str) -> Any:
             except json.JSONDecodeError:
                 return None
     return None
-
 
