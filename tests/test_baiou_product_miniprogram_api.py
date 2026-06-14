@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+from typing import Any
+
+from baiou.product.api import app as api_app
+
+
+def make_config(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
+    config = api_app.load_api_config()
+    config.update(
+        {
+            "sqlite_path": str(tmp_path / "app.db"),
+            "upload_root": str(tmp_path / "uploads"),
+            "max_conversations_per_user": 2,
+            "history_turns_for_reply": 1,
+            "daily_reply_quota": 10,
+            "max_images_per_reply": 2,
+            "min_images_per_reply": 0,
+            "max_image_mb": 1,
+            "max_image_bytes": 1024 * 1024,
+            "default_user_id": "test_user",
+        }
+    )
+    config.update(overrides)
+    return config
+
+
+def client_with_runtime(monkeypatch, tmp_path: Path, config: dict[str, Any] | None = None):
+    captured: list[dict[str, Any]] = []
+
+    def fake_run_reply(**kwargs):
+        captured.append(kwargs)
+        return {
+            "status": "model_success",
+            "run_id": f"runtime_{len(captured)}",
+            "image_understanding": "image summary" if kwargs.get("images") else "",
+            "answer": {
+                "reply": f"reply {len(captured)}",
+                "coach_analysis": "coach",
+                "risk_warning": "",
+                "next_step": "next",
+                "labels": {"stage": "test"},
+                "reference_segments": ["seg_1"],
+            },
+            "labels": {"stage": "test"},
+            "reference_segments": [{"segment_id": "seg_1", "text": "sample", "filename": "seg_1.md", "match_reasons": ["hit"]}],
+            "output_dir": str(tmp_path / "secret-output"),
+            "reply_result": {"status": "model_success"},
+        }
+
+    monkeypatch.setattr(api_app, "run_reply", fake_run_reply)
+    app = api_app.create_app(config or make_config(tmp_path))
+    return app.test_client(), captured
+
+
+def auth_headers(user_id: str = "test_user") -> dict[str, str]:
+    return {"Authorization": f"Bearer {user_id}"}
+
+
+def login_and_default_conversation(client) -> str:
+    response = client.post("/api/v1/auth/login", json={"user_id": "test_user"})
+    assert response.status_code == 200
+    response = client.get("/api/v1/conversations", headers=auth_headers())
+    data = response.get_json()
+    assert data["ok"] is True
+    assert len(data["conversations"]) == 1
+    return data["conversations"][0]["conversation_id"]
+
+
+def test_login_creates_default_conversation_and_reports_limits(monkeypatch, tmp_path: Path) -> None:
+    client, _captured = client_with_runtime(monkeypatch, tmp_path)
+
+    response = client.post("/api/v1/auth/login", json={"user_id": "test_user"})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["user"]["user_id"] == "test_user"
+    assert data["limits"]["daily_reply_remaining"] == 10
+    conversations = client.get("/api/v1/conversations", headers=auth_headers()).get_json()["conversations"]
+    assert len(conversations) == 1
+    assert conversations[0]["status"] == "active"
+
+
+def test_conversation_limit_is_enforced_on_server(monkeypatch, tmp_path: Path) -> None:
+    client, _captured = client_with_runtime(monkeypatch, tmp_path)
+    login_and_default_conversation(client)
+
+    first = client.post("/api/v1/conversations", headers=auth_headers(), json={"title": "second"})
+    second = client.post("/api/v1/conversations", headers=auth_headers(), json={"title": "third"})
+
+    assert first.status_code == 201
+    assert second.status_code == 429
+    assert second.get_json()["error"]["code"] == "conversation_limit_reached"
+
+
+def test_reply_uses_only_current_conversation_recent_history(monkeypatch, tmp_path: Path) -> None:
+    client, captured = client_with_runtime(monkeypatch, tmp_path)
+    conv_a = login_and_default_conversation(client)
+    conv_b = client.post("/api/v1/conversations", headers=auth_headers(), json={"title": "other", "background": "other background"}).get_json()[
+        "conversation"
+    ]["conversation_id"]
+    client.patch(f"/api/v1/conversations/{conv_a}", headers=auth_headers(), json={"background": "current background"})
+
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv_a, "question": "old question"})
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv_a, "question": "recent question"})
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv_b, "question": "other question"})
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv_a, "question": "final question", "context": "fresh note"})
+
+    final_context = captured[-1]["context"]
+    assert "current background" in final_context
+    assert "fresh note" in final_context
+    assert "recent question" in final_context
+    assert "old question" not in final_context
+    assert "other background" not in final_context
+    assert "other question" not in final_context
+
+
+def test_daily_reply_quota_blocks_generation(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, daily_reply_quota=1)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    first = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one"})
+    second = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "two"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.get_json()["error"]["code"] == "daily_quota_exhausted"
+    assert len(captured) == 1
+
+
+def test_upload_limits_and_staged_upload_ids(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, max_images_per_reply=1)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    too_many = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        data={
+            "conversation_id": conv,
+            "question": "with images",
+            "images": [(BytesIO(b"a"), "a.jpg"), (BytesIO(b"b"), "b.jpg")],
+        },
+        content_type="multipart/form-data",
+    )
+    assert too_many.status_code == 400
+    assert too_many.get_json()["error"]["code"] == "too_many_images"
+
+    upload = client.post(
+        "/api/v1/uploads",
+        headers=auth_headers(),
+        data={"file": (BytesIO(b"image-bytes"), "chat.jpg")},
+        content_type="multipart/form-data",
+    )
+    upload_id = upload.get_json()["upload"]["upload_id"]
+    reply = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "use image", "upload_ids": [upload_id]})
+
+    assert upload.status_code == 201
+    assert reply.status_code == 200
+    assert captured[-1]["images"]
+    assert Path(captured[-1]["images"][0]).exists()
+
+
+def test_reply_requires_image_when_configured(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, min_images_per_reply=1)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "no image"})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "image_required"
+    assert captured == []
+
+
+def test_feedback_binds_to_reply_without_exposing_internal_paths(monkeypatch, tmp_path: Path) -> None:
+    client, _captured = client_with_runtime(monkeypatch, tmp_path)
+    conv = login_and_default_conversation(client)
+
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello"})
+    data = response.get_json()
+    run_id = data["reply_run"]["run_id"]
+    feedback = client.post(
+        "/api/v1/feedback",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "run_id": run_id, "rating": "good", "notes": "works"},
+    )
+
+    assert feedback.status_code == 201
+    assert feedback.get_json()["feedback"]["run_id"] == run_id
+    assert "secret-output" not in str(data)
+    assert "output_dir" not in str(data)

@@ -1,0 +1,27 @@
+<view class="page">
+  <view class="panel">
+    <view class="section-title">账号</view>
+    <view class="muted">用户：{{user.user_id || "未登录"}}</view>
+    <view class="muted">今日剩余：{{limits.daily_reply_remaining || 0}} / {{limits.daily_reply_quota || 0}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">公告</view>
+    <view wx:for="{{announcements}}" wx:key="announcement_id" style="margin-bottom: 16rpx">
+      <view>{{item.title}}</view>
+      <view class="muted">{{item.content}}</view>
+    </view>
+    <view wx:if="{{!announcements.length}}" class="muted">暂无公告</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">会员与充值</view>
+    <view wx:for="{{products}}" wx:key="product_id" class="row" style="margin-bottom: 12rpx">
+      <view class="grow">
+        <view>{{item.name}}</view>
+        <view class="muted">{{item.description}}</view>
+      </view>
+      <button class="button secondary" disabled="{{!paymentEnabled}}">未开放</button>
+    </view>
+  </view>
+</view>

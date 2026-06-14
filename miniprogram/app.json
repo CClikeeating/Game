@@ -1,0 +1,29 @@
+{
+  "pages": [
+    "pages/reply/reply",
+    "pages/library/library",
+    "pages/me/me"
+  ],
+  "window": {
+    "navigationBarTitleText": "聊天",
+    "navigationBarBackgroundColor": "#f8f4ee",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f7f8fa"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#7b8494",
+    "selectedColor": "#171c22",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {"pagePath": "pages/reply/reply", "text": "聊天"},
+      {"pagePath": "pages/library/library", "text": "话术库"},
+      {"pagePath": "pages/me/me", "text": "我的"}
+    ]
+  },
+  "networkTimeout": {
+    "request": 120000,
+    "uploadFile": 120000
+  }
+}
