@@ -1,19 +1,19 @@
 # Baiou v0.2 Handoff
 
-This is the current handoff note for the Baiou v0.2 work. It records what is already in the integration branch, what exists on parallel branches, what local generated assets are important, and where the next owner should be careful.
+This is the current handoff note for the Baiou v0.2 final-integration work. It records what is already merged, what local generated assets are important, and where the next owner should be careful.
 
 ## Current Integration Branch
 
-Current PM/integration branch:
+Current final integration branch:
+
+```text
+codex/v02-final-integration
+```
+
+Base PM/integration branch:
 
 ```text
 codex/integrate-product-case-v02
-```
-
-Latest known commit on this branch:
-
-```text
-3cbcdc8 Add product eval input builder
 ```
 
 This branch includes:
@@ -26,16 +26,13 @@ bailian_rag_quality quality-label mode
 product image understanding speaker attribution fix
 quality-mode weak-reply overreading guard
 product eval input builder and eval handoff docs
-```
-
-This branch does not yet include the two later parallel feature branches:
-
-```text
-origin/codex/product-v2-miniprogram
-origin/codex/case-v2-weak-signal-coverage
+product mini-program MVP branch
+case weak-signal coverage branch
 ```
 
 ## Parallel Branches
+
+These branches have now been merged into `codex/v02-final-integration`. They are listed here only so the next owner can trace where the work came from.
 
 ### Product Mini Program
 
@@ -70,7 +67,7 @@ Known check from PM thread:
 manual TT run in WeChat DevTools was reported usable
 ```
 
-Do not assume this branch is already merged into `codex/integrate-product-case-v02`.
+Merged into `codex/v02-final-integration`.
 
 ### Case Weak-Signal Coverage
 
@@ -104,7 +101,7 @@ Known check from PM thread:
 37 passed
 ```
 
-Do not assume this branch is already merged into `codex/integrate-product-case-v02`.
+Merged into `codex/v02-final-integration`.
 
 ## Knowledge Base State
 
@@ -250,7 +247,7 @@ Main risks to watch:
 
 ```text
 1. Branch confusion
-   The mini-program branch and weak-signal case branch are not merged into the current integration branch yet.
+   The mini-program branch and weak-signal case branch are merged into `codex/v02-final-integration`, but they are still separate remote branches too. Use the final integration branch for combined testing.
 
 2. Artifact confusion
    outputs/ is ignored. Local current knowledge assets and eval tables are not guaranteed to exist in a fresh clone.
@@ -267,8 +264,8 @@ Main risks to watch:
 
 ## Suggested Next Steps
 
-1. Decide whether to merge `origin/codex/case-v2-weak-signal-coverage` into a new integration branch.
-2. Decide whether to merge `origin/codex/product-v2-miniprogram` into the same or a separate integration branch.
-3. If using a new Bailian knowledge base, upload the 455 clean docs and update the product vector store ID.
-4. Run the 33 product-ready eval cases on both `bailian_rag_fast` and `bailian_rag_quality`.
-5. Record failures by category: recall drift, over-escalation, too conservative, wrong speaker/context, awkward wording, or JSON/format failure.
+1. Push `codex/v02-final-integration` after combined tests pass.
+2. If using a new Bailian knowledge base, upload the 455 clean docs and update the product vector store ID.
+3. Run the 33 product-ready eval cases on both `bailian_rag_fast` and `bailian_rag_quality`.
+4. Record failures by category: recall drift, over-escalation, too conservative, wrong speaker/context, awkward wording, or JSON/format failure.
+5. If product and case behavior look good, treat `codex/v02-final-integration` as the v0.2 candidate branch.
