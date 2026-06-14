@@ -140,3 +140,12 @@ DEEPSEEK_API_KEY
 - `data/`：原始素材输入。
 - `tt/`：临时真实产品流测试素材，需要保留。
 - `outputs/baiou/`：主线运行产物。
+## v0.2 handoff
+
+Before continuing v0.2 work, read:
+
+```text
+baiou/V02_HANDOFF.md
+```
+
+It records the current integration branch, parallel product/case branches, cleaned 455-doc RAG library, product eval table rules, and handoff risks.
