@@ -1,0 +1,77 @@
+.library-page {
+  padding-top: 24rpx;
+}
+
+.hero {
+  background:
+    radial-gradient(circle at 90% 0%, rgba(245, 190, 132, 0.22), transparent 38%),
+    #172033;
+  border: 1rpx solid #172033;
+  border-radius: 24rpx;
+  padding: 30rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 18rpx 44rpx rgba(29, 39, 53, 0.12);
+}
+
+.hero-kicker {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 22rpx;
+  font-weight: 800;
+}
+
+.hero-title {
+  margin-top: 10rpx;
+  color: #ffffff;
+  font-size: 38rpx;
+  font-weight: 850;
+}
+
+.hero-subtitle {
+  margin-top: 10rpx;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 25rpx;
+  line-height: 1.55;
+}
+
+.module-grid {
+  display: grid;
+  gap: 16rpx;
+}
+
+.module-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1rpx solid rgba(226, 232, 240, 0.96);
+  border-radius: 22rpx;
+  padding: 24rpx;
+  box-shadow: 0 14rpx 36rpx rgba(29, 39, 53, 0.06);
+}
+
+.module-title {
+  color: #1d2735;
+  font-size: 30rpx;
+  font-weight: 800;
+}
+
+.module-desc {
+  margin-top: 10rpx;
+  color: #697386;
+  font-size: 25rpx;
+  line-height: 1.6;
+}
+
+.module-status {
+  display: inline-flex;
+  margin-top: 18rpx;
+  padding: 8rpx 14rpx;
+  border-radius: 999rpx;
+  background: #fff7ed;
+  color: #a8561d;
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.module-card:nth-child(1) .module-status,
+.module-card:nth-child(2) .module-status {
+  background: #f2faf7;
+  color: #176b5d;
+}
