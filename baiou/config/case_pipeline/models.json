@@ -9,7 +9,7 @@
     "api_key_env": "DEEPSEEK_API_KEY",
     "temperature": 0.1,
     "timeout_seconds": 240,
-    "max_tokens": 20000,
+    "max_tokens": 26000,
     "response_format_json": true
   },
   "case_review": {
@@ -21,7 +21,7 @@
     "api_key_env": "DASHSCOPE_API_KEY",
     "temperature": 0.0,
     "timeout_seconds": 240,
-    "max_tokens": 12000,
+    "max_tokens": 16000,
     "response_format_json": true
   },
   "reply_model": {
@@ -69,5 +69,4 @@
     "image_detail": "auto"
   }
 }
-
 

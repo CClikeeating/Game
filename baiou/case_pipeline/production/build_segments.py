@@ -16,6 +16,13 @@ from baiou.common.io import PROJECT_ROOT, read_json, write_json
 from baiou.case_pipeline.common import OUTPUT_ROOT, load_config, load_prompt
 from baiou.common.chat_json_client import ChatJsonClient
 from baiou.case_pipeline.schema import extract_transfer_value, normalize_segment, validate_segments
+from baiou.case_pipeline.production.audit_weak_signal_coverage import (
+    DEFAULT_WEAK_ACKS,
+    DEFAULT_WEAK_SUBSTRINGS,
+    coverage_by_turn,
+    find_weak_turns,
+    missing_weak_turn_ids,
+)
 from baiou.case_pipeline.production.disabled_summary import write_disabled_summary
 
 MAX_WORKERS_CAP = 50
@@ -78,6 +85,13 @@ DEFAULT_REVIEW_RULES = {
         "review_choices": REVIEW_CHOICES,
         "missing_node_choices": MISSING_NODE_CHOICES,
         "optional_review_fields": ["次要标签", "接触状态", "回复强度"],
+        "auto_approve_effective_without_review_issues": True,
+        "sort_segments_review_by_priority": True,
+    },
+    "weak_signal_coverage": {
+        "enabled": True,
+        "max_missing_nodes_per_case": 1,
+        "priority": "medium",
     },
 }
 
@@ -421,8 +435,10 @@ def process_job(job: CaseJob, output_root: Path, models: dict[str, Any], skip_re
     review_result = {"status": "skipped", "parsed": {}, "user_id": job.user_id, "model": "", "provider": "", "elapsed_seconds": 0, "usage": {}}
     if not skip_review:
         review_result = review_client.chat_json("只输出合法 JSON。", build_review_prompt(case, primary))
-    write_json(case_dir / "review_result.json", review_result)
     review = review_result.get("parsed", {}) if isinstance(review_result.get("parsed"), dict) else {}
+    review = ensure_weak_signal_missing_nodes(case, primary, review)
+    review_result["parsed"] = review
+    write_json(case_dir / "review_result.json", review_result)
     case_outline, segments = normalize_output(case_id, primary, review)
     issues = validate_segments(segments)
     apply_review_policy(segments, bool(issues))
@@ -478,6 +494,10 @@ def apply_review_policy(segments: list[dict[str, Any]], has_validation_issues: b
             segment["quality_status"] = "approved"
             segment["need_human_review"] = False
             segment["auto_review_reason"] = "仅低影响复核建议，进入可选复核表，不强制人工处理"
+        elif is_auto_approved_effective_no_review(segment, rules):
+            segment["quality_status"] = "approved"
+            segment["need_human_review"] = False
+            segment["auto_review_reason"] = "复核模型无修改意见，且主模型原回复评价为有效"
         elif is_auto_approved_keep_original(segment, rules):
             segment["quality_status"] = "approved"
             segment["need_human_review"] = False
@@ -505,6 +525,22 @@ def is_auto_approved_keep_original(segment: dict[str, Any], rules: dict[str, Any
     if not any(reply.startswith(str(prefix)) for prefix in prefixes if str(prefix)):
         return False
     return model_review_has_no_modifications(segment.get("model_review", {}))
+
+
+def is_auto_approved_effective_no_review(segment: dict[str, Any], rules: dict[str, Any]) -> bool:
+    workbook_config = rules.get("review_workbook", {}) if isinstance(rules.get("review_workbook", {}), dict) else {}
+    if not workbook_config.get("auto_approve_effective_without_review_issues", True):
+        return False
+    if segment.get("quality_status") not in {"draft", "needs_review"}:
+        return False
+    if not model_review_has_no_modifications(segment.get("model_review", {})):
+        return False
+    return original_reply_is_effective(segment)
+
+
+def original_reply_is_effective(segment: dict[str, Any]) -> bool:
+    text = str(segment.get("原回复评价", "") or "").strip()
+    return text.startswith("有效")
 
 
 def model_review_has_no_modifications(model_review: Any) -> bool:
@@ -566,6 +602,49 @@ def update_manifest_row_status(row: dict[str, Any], segments: list[dict[str, Any
     row["need_review_count"] = sum(1 for item in segments if item.get("need_human_review"))
     model_failed = row.get("primary_status") != "model_success" or row.get("review_status") not in {"model_success", "skipped"}
     row["status"] = "model_failed" if model_failed else "needs_review" if row["need_review_count"] or not segments else "ready"
+
+
+def ensure_weak_signal_missing_nodes(case: dict[str, Any], primary: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    rules = load_review_rules()
+    config = rules.get("weak_signal_coverage", {}) if isinstance(rules.get("weak_signal_coverage", {}), dict) else {}
+    if not config.get("enabled", True):
+        return review
+    review = dict(review) if isinstance(review, dict) else {}
+    missing_nodes = review.get("missing_nodes", [])
+    missing_nodes = list(missing_nodes) if isinstance(missing_nodes, list) else []
+    weak_turns = find_weak_turns(case, DEFAULT_WEAK_ACKS, DEFAULT_WEAK_SUBSTRINGS)
+    if not weak_turns:
+        review["missing_nodes"] = missing_nodes
+        return review
+    primary_segments = primary.get("segments", []) if isinstance(primary.get("segments", []), list) else []
+    primary_coverage = coverage_by_turn([item for item in primary_segments if isinstance(item, dict)])
+    weak_ids = {turn["turn_id"] for turn in weak_turns}
+    already_actionable = {turn_id for turn_id in weak_ids if turn_id in primary_coverage} | missing_weak_turn_ids(missing_nodes, weak_ids)
+    if already_actionable:
+        review["missing_nodes"] = missing_nodes
+        return review
+    max_nodes = max(1, int(config.get("max_missing_nodes_per_case", 1) or 1))
+    for turn in weak_turns[:max_nodes]:
+        missing_nodes.append(weak_signal_missing_node(turn, str(config.get("priority", "medium") or "medium")))
+    review["missing_nodes"] = missing_nodes
+    return review
+
+
+def weak_signal_missing_node(turn: dict[str, Any], priority: str) -> dict[str, Any]:
+    source_turn_ids = []
+    previous_male = turn.get("previous_male", []) if isinstance(turn.get("previous_male", []), list) else []
+    next_male = turn.get("next_male", []) if isinstance(turn.get("next_male", []), list) else []
+    if previous_male:
+        source_turn_ids.append(str(previous_male[-1].get("turn_id", "")))
+    source_turn_ids.append(str(turn.get("turn_id", "")))
+    if next_male:
+        source_turn_ids.append(str(next_male[0].get("turn_id", "")))
+    return {
+        "source_turn_ids": [turn_id for turn_id in source_turn_ids if turn_id],
+        "reason": "确定性覆盖检查：本案例存在弱承接/自然收尾/低压力节点，但主模型和复核模型都未覆盖代表片段；需要补 1 条边界校准样本，用于学习低压力接住、自然收住、不强行升温。",
+        "priority": priority,
+        "suggested_segment_focus": "弱承接/自然收尾边界校准：source_turn_ids 必须包含女生弱承接那一轮，标签优先安全/轻松、高热度信号=无。",
+    }
 
 
 def normalize_output(case_id: str, primary: dict[str, Any], review: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -881,6 +960,8 @@ def write_review_workbook(path: Path, rows: list[dict[str, Any]], missing_rows: 
     }
     must_rows = [dict(row, _review_sheet="segments_review") for row in rows if row.get("复核分层") != "可选复核"]
     optional_rows = [dict(row, _review_sheet="optional_review") for row in rows if row.get("复核分层") == "可选复核"]
+    if workbook_config.get("sort_segments_review_by_priority", True):
+        must_rows.sort(key=review_row_priority)
     wb = Workbook()
     ws = wb.active
     ws.title = "segments_review"
@@ -959,6 +1040,48 @@ def write_sheet(
         validation.add(f"{ws.cell(2, choice_col).coordinate}:{ws.cell(len(rows) + 1, choice_col).coordinate}")
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+
+
+def review_row_priority(row: dict[str, Any]) -> tuple[int, str, str]:
+    reason = str(row.get("分层理由", "") or "")
+    eval_text = str(row.get("主模型原回复评价", "") or "").strip()
+    issue_text = str(row.get("复核模型修改建议", "") or "")
+    fields = review_row_issue_fields(reason, issue_text)
+    label_fields = {"聊天阶段", "关系推进目标", "男生目标", "推荐策略", "高热度信号"}
+    serious_fields = {"原回复评价", "更优回复", "男生原回复", "女生最后一句", "source_turn_ids", "need_human_review"}
+    if fields & (serious_fields | {"风险类型"}):
+        group = 0
+    elif eval_text.startswith(("失败", "有问题")):
+        group = 1
+    elif eval_text.startswith("一般"):
+        group = 2
+    elif fields and fields <= label_fields:
+        group = 4
+    elif "建议修改" in str(row.get("复核模型结论", "")):
+        group = 3
+    else:
+        group = 5
+    return group, str(row.get("case_id", "")), str(row.get("review_id", ""))
+
+
+def review_row_issue_fields(reason: str, issue_text: str) -> set[str]:
+    fields = {
+        "聊天阶段",
+        "关系推进目标",
+        "男生目标",
+        "推荐策略",
+        "高热度信号",
+        "风险类型",
+        "原回复评价",
+        "更优回复",
+        "男生原回复",
+        "女生最后一句",
+        "source_turn_ids",
+        "need_human_review",
+    }
+    text = f"{reason}\n{issue_text}"
+    return {field for field in fields if field in text}
+
 
 def compact_log(case_id: str, role: str, result: dict[str, Any]) -> dict[str, Any]:
     return {
