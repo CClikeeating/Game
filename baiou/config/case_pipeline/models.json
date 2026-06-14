@@ -8,8 +8,8 @@
     "model": "deepseek-v4-pro",
     "api_key_env": "DEEPSEEK_API_KEY",
     "temperature": 0.1,
-    "timeout_seconds": 180,
-    "max_tokens": 12000,
+    "timeout_seconds": 240,
+    "max_tokens": 26000,
     "response_format_json": true
   },
   "case_review": {
@@ -20,8 +20,8 @@
     "model": "qwen3.7-plus",
     "api_key_env": "DASHSCOPE_API_KEY",
     "temperature": 0.0,
-    "timeout_seconds": 180,
-    "max_tokens": 8000,
+    "timeout_seconds": 240,
+    "max_tokens": 16000,
     "response_format_json": true
   },
   "reply_model": {
@@ -69,6 +69,4 @@
     "image_detail": "auto"
   }
 }
-
-
 

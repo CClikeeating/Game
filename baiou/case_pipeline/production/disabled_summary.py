@@ -22,6 +22,7 @@ DISABLED_FIELDS = [
     "更优回复",
     "迁移学习价值",
     "主标签",
+    "高热度信号",
     "次要标签",
     "quality_status",
     "禁用原因",
@@ -70,6 +71,7 @@ def disabled_row(segment: dict[str, Any]) -> dict[str, Any]:
         "更优回复": segment.get("更优回复", ""),
         "迁移学习价值": segment.get("迁移学习价值", ""),
         "主标签": format_labels(segment),
+        "高热度信号": segment.get("高热度信号", "无"),
         "次要标签": json.dumps(segment.get("次要标签", {}), ensure_ascii=False),
         "quality_status": segment.get("quality_status", ""),
         "禁用原因": disabled_reason(segment, review),
@@ -105,11 +107,14 @@ def format_labels(segment: dict[str, Any]) -> str:
     return "\n".join(
         [
             f"聊天阶段：{segment.get('聊天阶段', '')}",
+            f"接触状态：{segment.get('接触状态', '未知')}",
+            f"关系推进目标：{segment.get('关系推进目标', '无')}",
             f"女生状态：{segment.get('女生状态', '')}",
             f"男生目标：{segment.get('男生目标', '')}",
             f"推荐策略：{segment.get('推荐策略', '')}",
             f"风险类型：{risk_text}",
             f"回复强度：{segment.get('回复强度', '')}",
+            f"高热度信号：{segment.get('高热度信号', '无')}",
         ]
     )
 
@@ -134,6 +139,7 @@ def write_disabled_workbook(path: Path, rows: list[dict[str, Any]]) -> None:
         "更优回复": 42,
         "迁移学习价值": 54,
         "主标签": 30,
+        "高热度信号": 22,
         "次要标签": 36,
         "禁用原因": 60,
         "人工结论": 18,

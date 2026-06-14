@@ -24,11 +24,14 @@ def make_segment(segment_id: str, status: str, reply: str = "回复") -> dict:
         "segment_id": segment_id,
         "source_turn_ids": ["turn_0001"],
         "聊天阶段": "暧昧升温期",
+        "接触状态": "已线下接触",
+        "关系推进目标": "亲密升级推进",
         "女生状态": "热情",
         "男生目标": "延续话题",
         "推荐策略": "轻微调侃",
         "风险类型": [],
         "回复强度": "调侃",
+        "高热度信号": "性张力玩笑",
         "当前上下文": "女生问男生在干嘛",
         "女生最后一句": "你在干嘛",
         "男生原回复": "想你",
@@ -54,6 +57,9 @@ def test_disabled_summary_collects_disabled_segments(tmp_path: Path) -> None:
     assert summary["disabled_count"] == 1
     assert rows[0]["segment_id"] == "seg_002"
     assert rows[0]["人工结论"] == "暂不启用"
+    assert rows[0]["高热度信号"] == "性张力玩笑"
+    assert "接触状态：已线下接触" in rows[0]["主标签"]
+    assert "关系推进目标：亲密升级推进" in rows[0]["主标签"]
 
     workbook = load_workbook(batch_root / "disabled_segments.xlsx")
     assert workbook["disabled_segments"].max_row == 2
@@ -85,6 +91,11 @@ def test_build_assets_maintains_current_knowledge_store(monkeypatch, tmp_path: P
     assert second["last_import"]["updated_count"] == 1
     assert len(rows) == 2
     assert by_id["seg_001"]["更优回复"] == "第二版"
+    assert by_id["seg_001"]["高热度信号"] == "性张力玩笑"
+    assert by_id["seg_001"]["labels"]["接触状态"] == "已线下接触"
+    assert by_id["seg_001"]["labels"]["关系推进目标"] == "亲密升级推进"
+    assert "性张力玩笑" in by_id["seg_001"]["search_text"]
+    assert "亲密升级推进" in by_id["seg_001"]["search_text"]
     assert by_id["seg_001"]["rag_file_path"].startswith("segments/batch_b_")
     assert len(list((current_root / "rag_knowledge_base" / "segments").glob("*/*.md"))) == 3
     assert second["rag_knowledge_base"]["document_count"] == 2

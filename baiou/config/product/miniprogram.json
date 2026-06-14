@@ -1,0 +1,29 @@
+{
+  "server": {"host": "127.0.0.1", "port": 7871, "debug": false},
+  "storage": {"sqlite_path": "outputs/baiou/product/app.db"},
+  "upload": {"root": "outputs/baiou/product/miniprogram/uploads", "allowed_image_extensions": [".png", ".jpg", ".jpeg", ".webp"], "max_image_mb": 8},
+  "limits": {
+    "max_conversations_per_user": 5,
+    "history_turns_for_reply": 6,
+    "daily_reply_quota": 20,
+    "max_images_per_reply": 3,
+    "min_images_per_reply": 1,
+    "max_image_mb": 8
+  },
+  "runtime": {
+    "default_mode": "bailian_rag_fast",
+    "modes": {
+      "bailian_rag_fast": "快速模式",
+      "bailian_rag_quality": "质量模式"
+    }
+  },
+  "auth": {"default_user_id": "dev_user", "dev_login_enabled": true},
+  "announcements": [
+    {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放回复模块，聊天窗口、反馈和额度已经接入。", "status": "active"}
+  ],
+  "billing": {
+    "products": [
+      {"product_id": "daily_trial", "name": "内测额度", "description": "第一期占位商品，暂未接入真实支付。", "enabled": false}
+    ]
+  }
+}

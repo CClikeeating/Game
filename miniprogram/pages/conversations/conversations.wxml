@@ -1,0 +1,25 @@
+<view class="page">
+  <view class="panel">
+    <view class="section-title">新建聊天窗口</view>
+    <input class="input" placeholder="窗口名称，例如：刚认识的女生" value="{{title}}" bindinput="onTitleInput" />
+    <view style="height: 16rpx"></view>
+    <textarea class="textarea" placeholder="背景资料，例如：认识三天，还没见面" value="{{background}}" bindinput="onBackgroundInput"></textarea>
+    <view style="height: 16rpx"></view>
+    <button class="button" bindtap="createConversation">新建</button>
+    <view class="muted" style="margin-top: 12rpx">最多 {{limits.max_conversations_per_user || 0}} 个聊天窗口</view>
+  </view>
+
+  <view wx:for="{{conversations}}" wx:key="conversation_id" class="panel">
+    <view class="row">
+      <view class="grow">
+        <view class="section-title">{{item.title}}</view>
+        <view class="muted">{{item.background || "未填写背景"}}</view>
+      </view>
+      <button class="button secondary" data-id="{{item.conversation_id}}" bindtap="selectConversation">使用</button>
+    </view>
+    <view class="row" style="margin-top: 16rpx">
+      <button class="button secondary" data-id="{{item.conversation_id}}" data-title="{{item.title}}" data-background="{{item.background}}" bindtap="editConversation">编辑</button>
+      <button class="button secondary" data-id="{{item.conversation_id}}" bindtap="deleteConversation">归档</button>
+    </view>
+  </view>
+</view>

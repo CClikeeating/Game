@@ -37,7 +37,7 @@ def score_row(query: str, labels: dict[str, Any], row: dict[str, Any], weights: 
     reasons: list[str] = []
     row_labels = row.get("labels", {}) if isinstance(row.get("labels"), dict) else {}
     secondary_labels = row.get("secondary_labels", {}) if isinstance(row.get("secondary_labels"), dict) else {}
-    for field in ["聊天阶段", "女生状态", "男生目标", "推荐策略", "回复强度"]:
+    for field in ["聊天阶段", "接触状态", "关系推进目标", "女生状态", "男生目标", "推荐策略", "回复强度"]:
         if labels.get(field) and labels.get(field) == row_labels.get(field):
             value = int(weights.get(field, 1))
             score += value
@@ -46,6 +46,9 @@ def score_row(query: str, labels: dict[str, Any], row: dict[str, Any], weights: 
             value = max(1, int(weights.get(field, 1)) // 2)
             score += value
             reasons.append(f"{field}次要匹配")
+    if labels.get("高热度信号") and labels.get("高热度信号") == row.get("高热度信号"):
+        score += int(weights.get("高热度信号", 3))
+        reasons.append("高热度信号匹配")
     query_risks = labels.get("风险类型", []) if isinstance(labels.get("风险类型", []), list) else []
     row_risks = row_labels.get("风险类型", []) if isinstance(row_labels.get("风险类型", []), list) else []
     overlap = [risk for risk in query_risks if risk in row_risks]
@@ -116,5 +119,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
         "modes": {
             "quality_local": "质量模式：本地标签检索",
             "bailian_rag_fast": "百炼 RAG 快速模式",
+            "bailian_rag_quality": "百炼 RAG 质量模式：轻量局势标签 + 知识库",
         },
     },
 }
@@ -121,7 +122,7 @@ def collect_model_metrics(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "tokens": format_usage(vision.get("usage", {}) if isinstance(vision.get("usage", {}), dict) else {}),
             }
         )
-    reply_label = "百炼 RAG 回复" if result.get("mode") == "bailian_rag_fast" else "回复生成"
+    reply_label = "百炼 RAG 回复" if str(result.get("mode", "")).startswith("bailian_rag_") else "回复生成"
     for label, key in [("标签判断", "label_result"), (reply_label, "reply_result")]:
         item = result.get(key, {}) if isinstance(result.get(key, {}), dict) else {}
         if not item:
@@ -282,7 +283,6 @@ app = create_app()
 if __name__ == "__main__":
     cfg = load_web_config()
     app.run(host=cfg["host"], port=cfg["port"], debug=cfg["debug"], use_reloader=False)
-
 
 
 

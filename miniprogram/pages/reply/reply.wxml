@@ -1,0 +1,137 @@
+<view class="chat-page">
+  <view class="topbar surface">
+    <button class="icon-btn" aria-label="打开聊天窗口" bindtap="openDrawer">☰</button>
+    <view class="grow">
+      <view class="chat-title">{{currentConversation.title || "默认聊天"}}</view>
+    </view>
+    <view class="quota-pill">剩 {{serviceReady ? limits.daily_reply_remaining : "--" }} 次</view>
+  </view>
+
+  <view class="quick-guide">
+    <view class="guide-text">上传聊天截图 + 用户问题，我给你生成可直接发送的话。</view>
+    <button class="small-btn soft" bindtap="startNewConversation">新窗口</button>
+  </view>
+
+  <view class="main-card">
+    <view class="upload-panel {{images.length ? 'ready' : ''}}">
+      <view class="upload-copy">
+        <view class="upload-title">{{images.length ? "已上传聊天截图" : "请上传聊天截图"}}</view>
+        <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。没有截图不能生成。</view>
+      </view>
+      <button class="upload-btn" bindtap="chooseImages">{{images.length ? "继续加" : "上传"}}</button>
+    </view>
+
+    <view wx:if="{{images.length}}" class="image-list">
+      <view wx:for="{{images}}" wx:key="tempFilePath" class="image-item">
+        <image src="{{item.tempFilePath}}" mode="aspectFill"></image>
+        <view class="grow muted">{{item.sizeText}}</view>
+        <button class="text-btn" data-index="{{index}}" bindtap="removeImage">删除</button>
+      </view>
+    </view>
+
+    <view class="compact-field">
+      <view class="label">用户问题</view>
+      <textarea class="question-input" placeholder="我该怎么回" value="{{question}}" bindinput="onQuestionInput"></textarea>
+    </view>
+
+    <view class="compact-field">
+      <view class="label">补充背景</view>
+      <textarea class="context-input" placeholder="可选：认识多久、关系阶段、你想达到什么效果" value="{{context}}" bindinput="onContextInput"></textarea>
+    </view>
+  </view>
+
+  <view wx:if="{{result}}" class="result-card">
+    <view class="result-head">
+      <view class="grow">
+        <view class="result-title">推荐回复</view>
+      </view>
+      <view class="status-dot">{{result.status}}</view>
+    </view>
+    <view class="mode-block">
+      <view class="mode-row">
+        <view class="mode-strip">
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">快速模式</view>
+          <view class="mode-pill {{mode === 'bailian_rag_quality' ? 'active' : ''}}" data-mode="bailian_rag_quality" bindtap="selectMode">质量模式</view>
+        </view>
+      </view>
+      <view class="mode-help">快速模式更轻更稳；质量模式会多看一点局势和参考片段。</view>
+    </view>
+    <view class="reply-box">{{result.answer.reply || "暂无回复"}}</view>
+
+    <view class="analysis-block">
+      <view class="analysis-title">分析</view>
+      <view class="analysis-text">{{result.answer.coach_analysis || "无"}}</view>
+    </view>
+
+    <view class="fold-row" data-key="debugOpen" bindtap="toggleFold">
+      <view>截图理解 / 参考信息</view>
+      <view class="muted">{{debugOpen ? "收起" : "展开"}}</view>
+    </view>
+    <view wx:if="{{debugOpen}}" class="fold-content">
+      <view>{{result.image_understanding || "暂无截图理解"}}</view>
+      <view wx:if="{{result.reference_segments.length}}" class="ref-list">
+        <view wx:for="{{result.reference_segments}}" wx:key="segment_id" class="ref-item">{{item.segment_id || item.filename}} {{item.text || ""}}</view>
+      </view>
+    </view>
+
+    <view class="feedback-row">
+      <button class="feedback-btn" data-rating="good" bindtap="sendFeedback">好</button>
+      <button class="feedback-btn" data-rating="ok" bindtap="sendFeedback">还行</button>
+      <button class="feedback-btn" data-rating="bad" bindtap="sendFeedback">不好</button>
+    </view>
+  </view>
+
+  <view wx:else class="result-card empty-result">
+    <view class="result-head compact">
+      <view class="result-title">推荐回复</view>
+    </view>
+    <view class="mode-block">
+      <view class="mode-row">
+        <view class="mode-strip">
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">快速模式</view>
+          <view class="mode-pill {{mode === 'bailian_rag_quality' ? 'active' : ''}}" data-mode="bailian_rag_quality" bindtap="selectMode">质量模式</view>
+        </view>
+      </view>
+      <view class="mode-help">快速模式更轻更稳；质量模式会多看一点局势和参考片段。</view>
+    </view>
+    <view class="empty-reply">上传聊天截图后，生成的回复会出现在这里。</view>
+    <view class="empty-analysis">
+      <view class="analysis-title">分析</view>
+      <view class="analysis-text">生成后会一起展示为什么这么回。</view>
+    </view>
+  </view>
+
+  <view class="bottom-action">
+    <button class="generate-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="submitReply">生成推荐回复</button>
+  </view>
+
+  <view wx:if="{{drawerOpen}}" class="drawer-mask" bindtap="closeDrawer"></view>
+  <view class="drawer {{drawerOpen ? 'open' : ''}}">
+    <view class="drawer-head">
+      <view>
+        <view class="section-title">聊天窗口</view>
+        <view class="muted">最多 {{limits.max_conversations_per_user || 0}} 个</view>
+      </view>
+      <button class="icon-btn light" bindtap="closeDrawer">×</button>
+    </view>
+
+    <view class="drawer-form">
+      <input class="input" placeholder="窗口名称" value="{{draftTitle}}" bindinput="onDraftTitleInput" />
+      <textarea class="textarea small" placeholder="这个窗口的长期背景" value="{{draftBackground}}" bindinput="onDraftBackgroundInput"></textarea>
+      <button class="button" bindtap="saveConversation">{{editingId ? "保存窗口" : "新建窗口"}}</button>
+    </view>
+
+    <view class="conversation-list">
+      <view wx:for="{{conversations}}" wx:key="conversation_id" class="conversation-item {{item.conversation_id === currentConversation.conversation_id ? 'current' : ''}}">
+        <view class="grow" data-id="{{item.conversation_id}}" bindtap="selectConversation">
+          <view class="conversation-title">{{item.title}}</view>
+          <view class="conversation-bg">{{item.background || "未填写背景"}}</view>
+        </view>
+        <view class="conversation-actions">
+          <button class="text-btn" data-id="{{item.conversation_id}}" data-title="{{item.title}}" data-background="{{item.background}}" bindtap="editConversation">编辑</button>
+          <button class="text-btn danger" data-id="{{item.conversation_id}}" bindtap="deleteConversation">归档</button>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>

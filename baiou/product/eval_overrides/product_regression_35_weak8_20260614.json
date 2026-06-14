@@ -1,0 +1,21 @@
+{
+  "schema_version": "baiou_product_eval_overrides_v01",
+  "notes": "PM-curated overrides for product_regression_35_weak8_20260614. Outputs are ignored by git, so keep this tracked copy for handoff.",
+  "exclude_eval_indices": [1, 33],
+  "cases": {
+    "6": {
+      "expected_reply": "",
+      "expected_reply_source": "manual_none",
+      "expected_reply_optional": true,
+      "eval_input_ready": true,
+      "eval_input_issues": []
+    },
+    "18": {
+      "expected_reply": "别着急想我",
+      "expected_reply_source": "manual_override",
+      "expected_reply_optional": false,
+      "eval_input_ready": true,
+      "eval_input_issues": []
+    }
+  }
+}
