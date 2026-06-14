@@ -123,3 +123,50 @@ def test_optional_review_only_segment_is_auto_approved() -> None:
     assert segments[0]["quality_status"] == "approved"
     assert segments[0]["need_human_review"] is False
     assert "可选复核表" in segments[0]["auto_review_reason"]
+
+
+def test_effective_segment_without_review_issues_is_auto_approved() -> None:
+    segments = [
+        {
+            "原回复评价": "有效：自然接住，低压力延续。",
+            "更优回复": "可以这样说",
+            "quality_status": "draft",
+            "need_human_review": True,
+            "model_review": {},
+        }
+    ]
+
+    assert apply_review_policy(segments)
+    assert segments[0]["quality_status"] == "approved"
+    assert segments[0]["need_human_review"] is False
+    assert "原回复评价为有效" in segments[0]["auto_review_reason"]
+
+
+def test_review_workbook_sorts_high_priority_rows_before_label_only(tmp_path: Path) -> None:
+    label_row = {
+        "review_id": "review_0001",
+        "case_id": "case_001",
+        "segment_id": "seg_label",
+        "主模型原回复评价": "有效：回复可保留。",
+        "复核模型结论": "复核结论：建议修改",
+        "复核模型修改建议": "1. 字段：聊天阶段\n   复核建议值：熟悉期",
+        "复核分层": "必须复核",
+        "分层理由": "涉及核心字段：聊天阶段",
+    }
+    risk_row = {
+        "review_id": "review_0002",
+        "case_id": "case_001",
+        "segment_id": "seg_risk",
+        "主模型原回复评价": "失败：强行推进。",
+        "复核模型结论": "复核结论：建议修改",
+        "复核模型修改建议": "1. 字段：风险类型\n   复核建议值：[\"强行暧昧\"]",
+        "复核分层": "必须复核",
+        "分层理由": "涉及核心字段：风险类型",
+    }
+    workbook_path = tmp_path / "review.xlsx"
+
+    write_review_workbook(workbook_path, [label_row, risk_row], [])
+
+    wb = load_workbook(workbook_path)
+    assert wb["segments_review"]["A2"].value == "review_0002"
+    assert wb["segments_review"]["A3"].value == "review_0001"
