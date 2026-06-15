@@ -59,6 +59,10 @@ def auth_headers(user_id: str = "test_user") -> dict[str, str]:
     return {"Authorization": f"Bearer {user_id}"}
 
 
+def admin_headers(token: str = "admin-secret") -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def login_and_default_conversation(client) -> str:
     response = client.post("/api/v1/auth/login", json={"user_id": "test_user"})
     assert response.status_code == 200
@@ -81,6 +85,33 @@ def test_login_creates_default_conversation_and_reports_limits(monkeypatch, tmp_
     conversations = client.get("/api/v1/conversations", headers=auth_headers()).get_json()["conversations"]
     assert len(conversations) == 1
     assert conversations[0]["status"] == "active"
+
+
+def test_wechat_code_login_creates_session_token(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, dev_login_enabled=False, wechat_appid="wx_app", wechat_secret="secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    monkeypatch.setattr(api_app, "wechat_code_to_session", lambda _config, code: ({"openid": f"openid_{code}"}, ""))
+
+    response = client.post("/api/v1/auth/login", json={"code": "login-code"})
+    data = response.get_json()
+    token = data["token"]
+    me = client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    forged = client.get("/api/v1/me", headers={"Authorization": "Bearer fake_user"})
+
+    assert response.status_code == 200
+    assert token != data["user"]["user_id"]
+    assert data["user"]["user_id"].startswith("wx_")
+    assert me.status_code == 200
+    assert forged.status_code == 401
+
+
+def test_login_requires_code_when_dev_login_is_disabled(monkeypatch, tmp_path: Path) -> None:
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, make_config(tmp_path, dev_login_enabled=False))
+
+    response = client.post("/api/v1/auth/login", json={})
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == "login_code_required"
 
 
 def test_conversation_limit_is_enforced_on_server(monkeypatch, tmp_path: Path) -> None:
@@ -193,3 +224,60 @@ def test_feedback_binds_to_reply_without_exposing_internal_paths(monkeypatch, tm
     assert feedback.get_json()["feedback"]["run_id"] == run_id
     assert "secret-output" not in str(data)
     assert "output_dir" not in str(data)
+
+
+def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello"})
+    run_id = response.get_json()["reply_run"]["run_id"]
+    client.post(
+        "/api/v1/feedback",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "run_id": run_id, "rating": "bad", "notes": "too much"},
+    )
+
+    denied = client.get("/api/v1/admin/stats")
+    stats = client.get("/api/v1/admin/stats", headers=admin_headers())
+    feedback = client.get("/api/v1/admin/feedback", headers=admin_headers())
+    export = client.get("/api/v1/admin/feedback/export.csv", headers=admin_headers())
+
+    assert denied.status_code == 401
+    assert stats.status_code == 200
+    assert stats.get_json()["stats"]["totals"]["reply_runs"] == 1
+    assert feedback.get_json()["feedback"][0]["notes"] == "too much"
+    assert feedback.get_json()["feedback"][0]["reply"] == "reply 1"
+    assert export.status_code == 200
+    assert "too much" in export.get_data(as_text=True)
+    assert "reply 1" in export.get_data(as_text=True)
+
+
+def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", admin_config_path=str(tmp_path / "admin_config.json"))
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    response = client.post(
+        "/api/v1/admin/config",
+        headers=admin_headers(),
+        json={
+            "runtime": {"default_mode": "bailian_rag_quality"},
+            "rag": {"vector_store_ids": "new_store", "max_num_results": 4},
+            "limits": {"daily_reply_quota": 33, "max_images_per_reply": 4, "min_images_per_reply": 1, "max_image_mb": 9},
+            "retention": {"upload_days": 30, "run_days": 45},
+            "announcement": {"title": "notice", "content": "hello", "status": "active"},
+        },
+    )
+    data = response.get_json()
+    current = client.get("/api/v1/admin/config", headers=admin_headers()).get_json()["config"]
+    health = client.get("/api/v1/health").get_json()
+
+    assert response.status_code == 200
+    assert Path(data["saved"]).exists()
+    assert current["runtime"]["default_mode"] == "bailian_rag_quality"
+    assert current["rag"]["vector_store_ids"] == ["new_store"]
+    assert current["rag"]["max_num_results"] == 4
+    assert current["limits"]["daily_reply_quota"] == 33
+    assert current["retention"]["run_days"] == 45
+    assert current["announcement"]["title"] == "notice"
+    assert health["default_mode"] == "bailian_rag_quality"

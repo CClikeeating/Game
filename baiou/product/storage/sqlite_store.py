@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,14 @@ class ProductStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                );
                 """
             )
 
@@ -141,6 +150,31 @@ class ProductStore:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
+
+    def create_session(self, user_id: str, ttl_days: int = 30) -> str:
+        token = secrets.token_urlsafe(32)
+        stamp = now_iso()
+        expires_at = (datetime.now() + timedelta(days=max(1, int(ttl_days)))).isoformat(timespec="seconds")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions(token, user_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (token, user_id, stamp, expires_at),
+            )
+        return token
+
+    def user_id_for_session(self, token: str) -> str:
+        if not token:
+            return ""
+        stamp = now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM sessions WHERE token = ? AND expires_at >= ?",
+                (token, stamp),
+            ).fetchone()
+        return str(row["user_id"]) if row else ""
 
     def ensure_default_conversation(self, user_id: str) -> dict[str, Any]:
         existing = self.list_conversations(user_id, include_archived=False)
@@ -343,6 +377,76 @@ class ProductStore:
             row = conn.execute("SELECT * FROM feedback WHERE feedback_id = ?", (feedback_id,)).fetchone()
         return dict(row) if row else None
 
+    def admin_stats(self) -> dict[str, Any]:
+        today = date.today().isoformat()
+        with self.connect() as conn:
+            totals = {
+                "users": scalar(conn, "SELECT COUNT(*) FROM users"),
+                "conversations": scalar(conn, "SELECT COUNT(*) FROM conversations WHERE status = 'active'"),
+                "reply_runs": scalar(conn, "SELECT COUNT(*) FROM reply_runs"),
+                "uploads": scalar(conn, "SELECT COUNT(*) FROM uploads"),
+                "feedback": scalar(conn, "SELECT COUNT(*) FROM feedback"),
+                "today_reply_runs": scalar(conn, "SELECT COUNT(*) FROM reply_runs WHERE substr(created_at, 1, 10) = ?", (today,)),
+                "today_uploads": scalar(conn, "SELECT COUNT(*) FROM uploads WHERE substr(created_at, 1, 10) = ?", (today,)),
+                "today_feedback": scalar(conn, "SELECT COUNT(*) FROM feedback WHERE substr(created_at, 1, 10) = ?", (today,)),
+                "today_active_users": scalar(
+                    conn,
+                    """
+                    SELECT COUNT(DISTINCT user_id) FROM (
+                        SELECT user_id FROM reply_runs WHERE substr(created_at, 1, 10) = ?
+                        UNION
+                        SELECT user_id FROM uploads WHERE substr(created_at, 1, 10) = ?
+                    )
+                    """,
+                    (today, today),
+                ),
+            }
+            status_rows = conn.execute("SELECT status, COUNT(*) AS count FROM reply_runs GROUP BY status").fetchall()
+            mode_rows = conn.execute("SELECT mode, COUNT(*) AS count FROM reply_runs GROUP BY mode").fetchall()
+            feedback_rows = conn.execute("SELECT rating, COUNT(*) AS count FROM feedback GROUP BY rating").fetchall()
+            latest_failures = conn.execute(
+                """
+                SELECT run_id, user_id, conversation_id, mode, status, question, updated_at
+                FROM reply_runs
+                WHERE status NOT IN ('model_success', 'dry_run')
+                ORDER BY updated_at DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        return {
+            "date": today,
+            "totals": totals,
+            "reply_statuses": rows_to_counts(status_rows, "status"),
+            "reply_modes": rows_to_counts(mode_rows, "mode"),
+            "feedback_ratings": rows_to_counts(feedback_rows, "rating"),
+            "latest_failures": [dict(row) for row in latest_failures],
+        }
+
+    def list_feedback_detail(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.feedback_id, f.user_id, f.conversation_id, f.run_id, f.rating, f.notes, f.created_at,
+                    r.mode, r.status, r.question, r.user_context, r.image_count, r.answer_json, r.reference_segments_json
+                FROM feedback f
+                JOIN reply_runs r ON r.run_id = f.run_id
+                ORDER BY f.created_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [decode_feedback_row(row) for row in rows]
+
+    def feedback_export_rows(self, limit: int = 1000) -> list[dict[str, Any]]:
+        return self.list_feedback_detail(limit)
+
+    def delete_upload_rows_before(self, cutoff_iso: str) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT path FROM uploads WHERE created_at < ?", (cutoff_iso,)).fetchall()
+            conn.execute("DELETE FROM uploads WHERE created_at < ?", (cutoff_iso,))
+        return [str(row["path"]) for row in rows]
+
     def list_announcements(self) -> list[dict[str, Any]]:
         stamp = now_iso()
         with self.connect() as conn:
@@ -406,3 +510,23 @@ def decode_json(value: str, fallback: Any) -> Any:
         return json.loads(value or "")
     except json.JSONDecodeError:
         return fallback
+
+
+def scalar(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -> int:
+    row = conn.execute(query, params).fetchone()
+    return int(row[0] if row else 0)
+
+
+def rows_to_counts(rows: list[sqlite3.Row], key: str) -> dict[str, int]:
+    return {str(row[key] or ""): int(row["count"]) for row in rows}
+
+
+def decode_feedback_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    answer = decode_json(item.pop("answer_json", ""), {})
+    refs = decode_json(item.pop("reference_segments_json", ""), [])
+    item["reply"] = answer.get("reply", "") if isinstance(answer, dict) else ""
+    item["coach_analysis"] = answer.get("coach_analysis", "") if isinstance(answer, dict) else ""
+    item["risk_warning"] = answer.get("risk_warning", "") if isinstance(answer, dict) else ""
+    item["reference_count"] = len(refs) if isinstance(refs, list) else 0
+    return item

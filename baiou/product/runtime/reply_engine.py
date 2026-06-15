@@ -455,19 +455,55 @@ def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:
         return cfg, "reply_rag_model_missing_vector_store_ids"
     file_search["enabled"] = True
     file_search["vector_store_ids"] = vector_ids
+    max_num_results = configured_rag_max_num_results(file_search)
+    if max_num_results:
+        file_search["max_num_results"] = max_num_results
     return cfg, ""
 
 
 def configured_vector_store_ids(cfg: dict[str, Any]) -> list[str]:
+    admin_ids = admin_rag_config().get("vector_store_ids", [])
+    if admin_ids:
+        return [str(item).strip() for item in admin_ids if str(item).strip()] if isinstance(admin_ids, list) else split_config_list(admin_ids)
     file_search = cfg.get("file_search", {}) if isinstance(cfg.get("file_search"), dict) else {}
     env_name = str(file_search.get("vector_store_ids_env") or cfg.get("vector_store_ids_env") or "").strip()
     raw = os.environ.get(env_name, "") if env_name else ""
     if raw:
-        return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+        return split_config_list(raw)
     ids = file_search.get("vector_store_ids", [])
     if isinstance(ids, str):
-        return [item.strip() for item in ids.replace(";", ",").split(",") if item.strip()]
+        return split_config_list(ids)
     return [str(item).strip() for item in ids if str(item).strip()] if isinstance(ids, list) else []
+
+
+def configured_rag_max_num_results(file_search: dict[str, Any]) -> int:
+    admin_value = admin_rag_config().get("max_num_results")
+    raw = str(admin_value or "").strip()
+    if not raw:
+        raw = os.environ.get("BAIOU_RAG_MAX_NUM_RESULTS", "").strip()
+    if not raw:
+        raw = str(file_search.get("max_num_results", "")).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(1, min(10, value))
+
+
+def admin_rag_config() -> dict[str, Any]:
+    path = resolve_path(os.environ.get("BAIOU_ADMIN_CONFIG") or "outputs/baiou/product/admin_config.json")
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    rag = payload.get("rag", {}) if isinstance(payload, dict) else {}
+    return rag if isinstance(rag, dict) else {}
+
+
+def split_config_list(value: Any) -> list[str]:
+    return [item.strip() for item in str(value or "").replace(";", ",").split(",") if item.strip()]
 
 
 def extract_labels(parsed: dict[str, Any]) -> dict[str, Any]:

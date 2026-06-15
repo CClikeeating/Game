@@ -17,6 +17,7 @@
       <view class="upload-copy">
         <view class="upload-title">{{images.length ? "已上传聊天截图" : "请上传聊天截图"}}</view>
         <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。没有截图不能生成。</view>
+        <view class="privacy-note">截图仅用于生成回复和服务质量分析，不会长期保存，将在固定期限后自动删除。</view>
       </view>
       <button class="upload-btn" bindtap="chooseImages">{{images.length ? "继续加" : "上传"}}</button>
     </view>
@@ -79,6 +80,7 @@
       <button class="feedback-btn" data-rating="ok" bindtap="sendFeedback">还行</button>
       <button class="feedback-btn" data-rating="bad" bindtap="sendFeedback">不好</button>
     </view>
+    <textarea class="feedback-note-input" placeholder="反馈备注，可选" value="{{feedbackNotes}}" bindinput="onFeedbackNotesInput"></textarea>
   </view>
 
   <view wx:else class="result-card empty-result">

@@ -1,5 +1,8 @@
+import json
+
 from baiou.product.runtime.reply_engine import (
     MODE_BAILIAN_RAG_QUALITY,
+    bailian_rag_config,
     build_bailian_rag_prompt,
     build_quality_label_prompt,
     normalize_mode,
@@ -19,6 +22,49 @@ def test_bailian_rag_quality_mode_and_user_id_are_configurable(monkeypatch) -> N
 
     monkeypatch.setenv("BAIOU_PRODUCT_USER_ID_BAILIAN_RAG_QUALITY", "88")
     assert resolve_user_id(models, MODE_BAILIAN_RAG_QUALITY) == "88"
+
+
+def test_bailian_rag_max_num_results_is_configurable(monkeypatch) -> None:
+    models = {
+        "reply_rag_model": {
+            "file_search": {
+                "vector_store_ids": ["vs_1"],
+                "max_num_results": 3,
+            }
+        }
+    }
+
+    cfg, error = bailian_rag_config(models)
+    assert error == ""
+    assert cfg["file_search"]["max_num_results"] == 3
+
+    monkeypatch.setenv("BAIOU_RAG_MAX_NUM_RESULTS", "5")
+    cfg, error = bailian_rag_config(models)
+    assert error == ""
+    assert cfg["file_search"]["max_num_results"] == 5
+
+
+def test_admin_config_overrides_rag_file_search(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "admin_config.json"
+    config_path.write_text(json.dumps({"rag": {"vector_store_ids": ["admin_store"], "max_num_results": 4}}), encoding="utf-8")
+    monkeypatch.setenv("BAIOU_ADMIN_CONFIG", str(config_path))
+    monkeypatch.setenv("BAIOU_VECTOR_STORE_IDS", "env_store")
+    monkeypatch.setenv("BAIOU_RAG_MAX_NUM_RESULTS", "5")
+    models = {
+        "reply_rag_model": {
+            "file_search": {
+                "vector_store_ids_env": "BAIOU_VECTOR_STORE_IDS",
+                "vector_store_ids": ["model_store"],
+                "max_num_results": 3,
+            }
+        }
+    }
+
+    cfg, error = bailian_rag_config(models)
+
+    assert error == ""
+    assert cfg["file_search"]["vector_store_ids"] == ["admin_store"]
+    assert cfg["file_search"]["max_num_results"] == 4
 
 
 def test_quality_guidance_is_lightweight_soft_anchor() -> None:

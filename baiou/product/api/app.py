@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
+from csv import DictWriter
+from io import StringIO
 from pathlib import Path
 from typing import Any
+from urllib import parse, request as urlrequest
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
@@ -36,7 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_mode": MODE_BAILIAN_RAG_FAST,
         "modes": {MODE_BAILIAN_RAG_FAST: "快速模式", MODE_BAILIAN_RAG_QUALITY: "质量模式"},
     },
-    "auth": {"default_user_id": "dev_user", "dev_login_enabled": True},
+    "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
+    "admin": {"token": ""},
+    "retention": {"upload_days": 30, "run_days": 30},
     "announcements": [],
     "billing": {"products": []},
 }
@@ -62,25 +68,45 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
     @app.post("/api/v1/auth/login")
     def login():
         payload = request.get_json(silent=True) or {}
-        user_id = requested_user_id(config, payload)
-        user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
-        return ok({"token": user["user_id"], "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
+        code = str(payload.get("code", "")).strip()
+        if code:
+            session, error = wechat_code_to_session(config, code)
+            if error:
+                return fail(error, "微信登录失败，请稍后重试。", 401)
+            openid = str(session.get("openid", "")).strip()
+            if not openid:
+                return fail("wechat_openid_missing", "微信登录失败，请稍后重试。", 401)
+            user_id = wechat_user_id(openid)
+            user = store.ensure_user(user_id, openid, str(payload.get("nickname", "")))
+        elif config["dev_login_enabled"]:
+            user_id = requested_user_id(config, payload)
+            user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
+        else:
+            return fail("login_code_required", "请先完成微信登录。", 401)
+        token = store.create_session(user["user_id"], int(config.get("session_days", 30)))
+        return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
     @app.get("/api/v1/me")
     def me():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         user = store.ensure_user(user_id)
         return ok({"user": public_user(user), "limits": usage_payload(store, config, user_id)})
 
     @app.get("/api/v1/conversations")
     def conversations_index():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         store.ensure_user(user_id)
         return ok({"conversations": [public_conversation(item) for item in store.list_conversations(user_id)]})
 
     @app.post("/api/v1/conversations")
     def conversations_create():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         store.ensure_user(user_id)
         if store.active_conversation_count(user_id) >= int(config["max_conversations_per_user"]):
             return fail("conversation_limit_reached", f"最多可创建 {config['max_conversations_per_user']} 个聊天窗口。", 429)
@@ -90,7 +116,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.patch("/api/v1/conversations/<conversation_id>")
     def conversations_update(conversation_id: str):
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         payload = request.get_json(silent=True) or {}
         item = store.update_conversation(
             user_id,
@@ -104,7 +132,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.delete("/api/v1/conversations/<conversation_id>")
     def conversations_delete(conversation_id: str):
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         if not store.archive_conversation(user_id, conversation_id):
             return fail("conversation_not_found", "聊天窗口不存在。", 404)
         store.ensure_default_conversation(user_id)
@@ -112,7 +142,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.post("/api/v1/replies")
     def replies_create():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         store.ensure_user(user_id)
         form = request.form if request.form else request.get_json(silent=True) or {}
         conversation_id = str(form.get("conversation_id", "")).strip()
@@ -166,7 +198,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.post("/api/v1/uploads")
     def uploads_create():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         store.ensure_user(user_id)
         files = request.files.getlist("images") or request.files.getlist("file")
         validation_error = validate_images(files, {**config, "max_images_per_reply": 1})
@@ -182,7 +216,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.post("/api/v1/feedback")
     def feedback_create():
-        user_id = current_user_id(config)
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
         payload = request.get_json(silent=True) or {}
         rating = str(payload.get("rating", "")).strip()
         if rating not in {"good", "ok", "bad", "有用", "一般", "不合适"}:
@@ -198,6 +234,70 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return fail("feedback_target_not_found", "反馈对应的回复不存在。", 404)
         return ok({"feedback": public_feedback(item)}, 201)
 
+    @app.get("/api/v1/admin/stats")
+    def admin_stats():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        return ok({"stats": store.admin_stats()})
+
+    @app.get("/api/v1/admin/feedback")
+    def admin_feedback():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 50, 1, 500)
+        return ok({"feedback": [public_feedback_detail(item) for item in store.list_feedback_detail(limit)]})
+
+    @app.get("/api/v1/admin/config")
+    def admin_config_get():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        return ok({"config": public_admin_config(config)})
+
+    @app.post("/api/v1/admin/config")
+    def admin_config_save():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        saved = save_admin_config(config, payload)
+        apply_admin_config(config, clean_admin_config_payload(payload, config))
+        return ok({"config": public_admin_config(config), "saved": saved})
+
+    @app.get("/api/v1/admin/feedback/export.csv")
+    def admin_feedback_export():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 1000, 1, 10000)
+        rows = [feedback_export_row(item) for item in store.feedback_export_rows(limit)]
+        handle = StringIO()
+        fieldnames = [
+            "created_at",
+            "user_id",
+            "conversation_id",
+            "run_id",
+            "mode",
+            "status",
+            "rating",
+            "notes",
+            "question",
+            "reply",
+            "risk_warning",
+            "image_count",
+            "reference_count",
+        ]
+        writer = DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            "\ufeff" + handle.getvalue(),
+            mimetype="text/csv; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=baiou_feedback.csv"},
+        )
+
     @app.get("/api/v1/announcements")
     def announcements_index():
         stored = store.list_announcements()
@@ -212,6 +312,10 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
     def billing_orders():
         return fail("payment_not_enabled", "第一期暂未接入真实支付。", 501)
 
+    @app.get("/admin")
+    def admin_page():
+        return Response(admin_page_html(), mimetype="text/html; charset=utf-8")
+
     return app
 
 
@@ -222,12 +326,20 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         loaded = load_data(config_path)
         if isinstance(loaded, dict):
             deep_update(raw, loaded)
+    admin_config_path = resolve_path(os.environ.get("BAIOU_ADMIN_CONFIG") or raw.get("admin", {}).get("config_path", "outputs/baiou/product/admin_config.json"))
+    if admin_config_path.exists():
+        loaded_admin_config = load_data(admin_config_path)
+        if isinstance(loaded_admin_config, dict):
+            deep_update(raw, loaded_admin_config)
     server = raw.get("server", {})
     storage = raw.get("storage", {})
     upload = raw.get("upload", {})
     limits = raw.get("limits", {})
     runtime = raw.get("runtime", {})
     auth = raw.get("auth", {})
+    admin = raw.get("admin", {}) if isinstance(raw.get("admin"), dict) else {}
+    retention = raw.get("retention", {}) if isinstance(raw.get("retention"), dict) else {}
+    rag = raw.get("rag", {}) if isinstance(raw.get("rag"), dict) else {}
     max_image_mb = int(os.environ.get("BAIOU_MINIPROGRAM_MAX_IMAGE_MB") or limits.get("max_image_mb") or upload.get("max_image_mb", 8))
     return {
         "host": os.environ.get("BAIOU_MINIPROGRAM_HOST") or server.get("host", "127.0.0.1"),
@@ -247,6 +359,15 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "modes": runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"]),
         "default_user_id": os.environ.get("BAIOU_MINIPROGRAM_DEFAULT_USER_ID") or auth.get("default_user_id", "dev_user"),
         "dev_login_enabled": parse_bool(os.environ.get("BAIOU_MINIPROGRAM_DEV_LOGIN"), bool(auth.get("dev_login_enabled", True))),
+        "session_days": int(os.environ.get("BAIOU_SESSION_DAYS") or auth.get("session_days", 30)),
+        "wechat_appid": os.environ.get("BAIOU_WECHAT_APPID") or auth.get("wechat_appid", ""),
+        "wechat_secret": os.environ.get("BAIOU_WECHAT_SECRET") or auth.get("wechat_secret", ""),
+        "admin_token": os.environ.get("BAIOU_ADMIN_TOKEN") or admin.get("token", ""),
+        "admin_config_path": str(admin_config_path),
+        "upload_retention_days": int(os.environ.get("BAIOU_UPLOAD_RETENTION_DAYS") or retention.get("upload_days", 30)),
+        "run_retention_days": int(os.environ.get("BAIOU_RUN_RETENTION_DAYS") or retention.get("run_days", 30)),
+        "vector_store_ids": configured_list(rag.get("vector_store_ids") or os.environ.get("BAIOU_VECTOR_STORE_IDS") or "n7s0ou2dpt"),
+        "rag_max_num_results": bounded_int(rag.get("max_num_results") or os.environ.get("BAIOU_RAG_MAX_NUM_RESULTS"), 3, 1, 10),
         "announcements": raw.get("announcements", []),
         "billing_products": raw.get("billing", {}).get("products", []) if isinstance(raw.get("billing"), dict) else [],
     }
@@ -280,14 +401,178 @@ def requested_user_id(config: dict[str, Any], payload: dict[str, Any]) -> str:
     return str(config.get("default_user_id", "dev_user"))
 
 
-def current_user_id(config: dict[str, Any]) -> str:
+def current_user_id(config: dict[str, Any], store: ProductStore) -> str:
     auth = request.headers.get("Authorization", "").strip()
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
         if token:
-            return token
+            user_id = store.user_id_for_session(token)
+            if user_id:
+                return user_id
+            if config.get("dev_login_enabled"):
+                return token
     header = request.headers.get("X-Baiou-User-Id", "").strip()
-    return header or str(config.get("default_user_id", "dev_user"))
+    if header and config.get("dev_login_enabled"):
+        return header
+    return str(config.get("default_user_id", "dev_user")) if config.get("dev_login_enabled") else ""
+
+
+def wechat_code_to_session(config: dict[str, Any], code: str) -> tuple[dict[str, Any], str]:
+    appid = str(config.get("wechat_appid", "")).strip()
+    secret = str(config.get("wechat_secret", "")).strip()
+    if not appid or not secret:
+        return {}, "wechat_config_missing"
+    query = parse.urlencode({"appid": appid, "secret": secret, "js_code": code, "grant_type": "authorization_code"})
+    url = f"https://api.weixin.qq.com/sns/jscode2session?{query}"
+    try:
+        with urlrequest.urlopen(url, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}, "wechat_request_failed"
+    if int(payload.get("errcode", 0) or 0) != 0:
+        return {}, f"wechat_error_{payload.get('errcode')}"
+    return payload, ""
+
+
+def wechat_user_id(openid: str) -> str:
+    return "wx_" + hashlib.sha256(openid.encode("utf-8")).hexdigest()[:24]
+
+
+def require_admin(config: dict[str, Any]):
+    token = str(config.get("admin_token", "")).strip()
+    if not token:
+        return fail("admin_not_configured", "管理员 token 未配置。", 503)
+    auth = request.headers.get("Authorization", "").strip()
+    provided = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("X-Baiou-Admin-Token", "").strip()
+    if not provided:
+        provided = request.args.get("token", "").strip()
+    if provided != token:
+        return fail("admin_unauthorized", "没有后台访问权限。", 401)
+    return None
+
+
+def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
+    announcement = first_announcement(config)
+    return {
+        "runtime": {
+            "default_mode": config.get("default_mode", MODE_BAILIAN_RAG_FAST),
+            "modes": config.get("modes", {}),
+        },
+        "rag": {
+            "vector_store_ids": config.get("vector_store_ids", []),
+            "max_num_results": config.get("rag_max_num_results", 3),
+        },
+        "limits": {
+            "daily_reply_quota": config.get("daily_reply_quota", 20),
+            "max_conversations_per_user": config.get("max_conversations_per_user", 5),
+            "history_turns_for_reply": config.get("history_turns_for_reply", 6),
+            "max_images_per_reply": config.get("max_images_per_reply", 3),
+            "min_images_per_reply": config.get("min_images_per_reply", 1),
+            "max_image_mb": config.get("max_image_mb", 8),
+        },
+        "retention": {
+            "upload_days": config.get("upload_retention_days", 30),
+            "run_days": config.get("run_retention_days", 30),
+        },
+        "announcement": {
+            "title": announcement.get("title", ""),
+            "content": announcement.get("content", ""),
+            "status": announcement.get("status", "active"),
+        },
+        "secrets": {
+            "dashscope_api_key": bool(os.environ.get("DASHSCOPE_API_KEY")),
+            "deepseek_api_key": bool(os.environ.get("DEEPSEEK_API_KEY")),
+            "wechat_appid": bool(config.get("wechat_appid")),
+            "wechat_secret": bool(config.get("wechat_secret")),
+            "admin_token": bool(config.get("admin_token")),
+        },
+        "paths": {
+            "admin_config_path": config.get("admin_config_path", ""),
+            "sqlite_path": config.get("sqlite_path", ""),
+            "upload_root": config.get("upload_root", ""),
+        },
+        "auth": {
+            "dev_login_enabled": bool(config.get("dev_login_enabled")),
+            "session_days": config.get("session_days", 30),
+        },
+    }
+
+
+def save_admin_config(config: dict[str, Any], payload: dict[str, Any]) -> str:
+    cleaned = clean_admin_config_payload(payload, config)
+    path = resolve_path(config.get("admin_config_path") or "outputs/baiou/product/admin_config.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    runtime = payload.get("runtime", {}) if isinstance(payload.get("runtime"), dict) else {}
+    rag = payload.get("rag", {}) if isinstance(payload.get("rag"), dict) else {}
+    limits = payload.get("limits", {}) if isinstance(payload.get("limits"), dict) else {}
+    retention = payload.get("retention", {}) if isinstance(payload.get("retention"), dict) else {}
+    announcement = payload.get("announcement", {}) if isinstance(payload.get("announcement"), dict) else {}
+    mode = normalize_api_mode(str(runtime.get("default_mode") or config.get("default_mode")), config)
+    return {
+        "runtime": {"default_mode": mode},
+        "rag": {
+            "vector_store_ids": configured_list(rag.get("vector_store_ids") or config.get("vector_store_ids", [])),
+            "max_num_results": bounded_int(rag.get("max_num_results"), int(config.get("rag_max_num_results", 3)), 1, 10),
+        },
+        "limits": {
+            "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 20)), 1, 10000),
+            "max_conversations_per_user": bounded_int(limits.get("max_conversations_per_user"), int(config.get("max_conversations_per_user", 5)), 1, 100),
+            "history_turns_for_reply": bounded_int(limits.get("history_turns_for_reply"), int(config.get("history_turns_for_reply", 6)), 0, 50),
+            "max_images_per_reply": bounded_int(limits.get("max_images_per_reply"), int(config.get("max_images_per_reply", 3)), 1, 10),
+            "min_images_per_reply": bounded_int(limits.get("min_images_per_reply"), int(config.get("min_images_per_reply", 1)), 0, 10),
+            "max_image_mb": bounded_int(limits.get("max_image_mb"), int(config.get("max_image_mb", 8)), 1, 50),
+        },
+        "retention": {
+            "upload_days": bounded_int(retention.get("upload_days"), int(config.get("upload_retention_days", 30)), 1, 365),
+            "run_days": bounded_int(retention.get("run_days"), int(config.get("run_retention_days", 30)), 1, 365),
+        },
+        "announcements": [
+            {
+                "announcement_id": "admin_notice",
+                "title": str(announcement.get("title", "")).strip()[:80],
+                "content": str(announcement.get("content", "")).strip()[:500],
+                "status": "active" if str(announcement.get("status", "active")).strip() != "inactive" else "inactive",
+            }
+        ],
+    }
+
+
+def apply_admin_config(config: dict[str, Any], cleaned: dict[str, Any]) -> None:
+    runtime = cleaned.get("runtime", {})
+    rag = cleaned.get("rag", {})
+    limits = cleaned.get("limits", {})
+    retention = cleaned.get("retention", {})
+    config["default_mode"] = runtime.get("default_mode", config.get("default_mode", MODE_BAILIAN_RAG_FAST))
+    config["vector_store_ids"] = configured_list(rag.get("vector_store_ids") or config.get("vector_store_ids", []))
+    config["rag_max_num_results"] = bounded_int(rag.get("max_num_results"), int(config.get("rag_max_num_results", 3)), 1, 10)
+    for key in [
+        "daily_reply_quota",
+        "max_conversations_per_user",
+        "history_turns_for_reply",
+        "max_images_per_reply",
+        "min_images_per_reply",
+        "max_image_mb",
+    ]:
+        if key in limits:
+            config[key] = limits[key]
+    config["max_image_bytes"] = int(config.get("max_image_mb", 8)) * 1024 * 1024
+    config["upload_retention_days"] = retention.get("upload_days", config.get("upload_retention_days", 30))
+    config["run_retention_days"] = retention.get("run_days", config.get("run_retention_days", 30))
+    if isinstance(cleaned.get("announcements"), list):
+        config["announcements"] = cleaned["announcements"]
+
+
+def first_announcement(config: dict[str, Any]) -> dict[str, Any]:
+    items = config.get("announcements", [])
+    if isinstance(items, list) and items:
+        first = items[0]
+        return first if isinstance(first, dict) else {}
+    return {}
 
 
 def normalize_api_mode(value: str, config: dict[str, Any]) -> str:
@@ -456,6 +741,43 @@ def public_feedback(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def public_feedback_detail(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "feedback_id": item.get("feedback_id", ""),
+        "user_id": item.get("user_id", ""),
+        "conversation_id": item.get("conversation_id", ""),
+        "run_id": item.get("run_id", ""),
+        "mode": item.get("mode", ""),
+        "status": item.get("status", ""),
+        "rating": item.get("rating", ""),
+        "notes": item.get("notes", ""),
+        "question": item.get("question", ""),
+        "reply": item.get("reply", ""),
+        "risk_warning": item.get("risk_warning", ""),
+        "image_count": item.get("image_count", 0),
+        "reference_count": item.get("reference_count", 0),
+        "created_at": item.get("created_at", ""),
+    }
+
+
+def feedback_export_row(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_at": item.get("created_at", ""),
+        "user_id": item.get("user_id", ""),
+        "conversation_id": item.get("conversation_id", ""),
+        "run_id": item.get("run_id", ""),
+        "mode": item.get("mode", ""),
+        "status": item.get("status", ""),
+        "rating": item.get("rating", ""),
+        "notes": item.get("notes", ""),
+        "question": item.get("question", ""),
+        "reply": item.get("reply", ""),
+        "risk_warning": item.get("risk_warning", ""),
+        "image_count": item.get("image_count", 0),
+        "reference_count": item.get("reference_count", 0),
+    }
+
+
 def public_upload(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "upload_id": item.get("upload_id", ""),
@@ -474,10 +796,282 @@ def public_announcement(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def admin_page_html() -> str:
+    return """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Baiou Admin</title>
+  <style>
+    :root {
+      --bg: #f5f7f8;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #667085;
+      --line: #dfe6ef;
+      --accent: #176b5d;
+      --warn: #9a4b18;
+      --soft: #eef6f3;
+      --shadow: 0 18px 48px rgba(30, 41, 59, 0.08);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    main { max-width: 1180px; margin: 0 auto; padding: 28px 18px 48px; }
+    header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 30px; letter-spacing: 0; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    p { margin: 6px 0 0; color: var(--muted); line-height: 1.55; }
+    .grid { display: grid; grid-template-columns: 0.95fr 1.35fr; gap: 16px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 18px; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcfd; }
+    .metric b { display: block; font-size: 22px; margin-bottom: 2px; }
+    .metric span, label span { color: var(--muted); font-size: 13px; }
+    form { display: grid; gap: 14px; }
+    .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    label { display: grid; gap: 6px; font-weight: 700; font-size: 14px; }
+    input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; font: inherit; color: var(--ink); background: #fff; }
+    textarea { min-height: 86px; resize: vertical; }
+    .full { grid-column: 1 / -1; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button, a.button { border: 0; border-radius: 7px; padding: 10px 14px; background: var(--accent); color: #fff; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+    button.secondary, a.secondary { background: #eef1f5; color: var(--ink); }
+    .status { min-height: 22px; color: var(--muted); font-size: 13px; }
+    .secret-list { display: grid; gap: 8px; margin-top: 10px; }
+    .secret { display: flex; justify-content: space-between; border-bottom: 1px solid #edf1f5; padding: 8px 0; }
+    .tag { border-radius: 999px; padding: 3px 8px; background: #f1f5f9; color: var(--muted); font-size: 12px; }
+    .tag.ok { background: var(--soft); color: var(--accent); }
+    .tag.warn { background: #fff7ed; color: var(--warn); }
+    .feedback { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; border-bottom: 1px solid #edf1f5; padding: 9px 6px; vertical-align: top; }
+    th { color: var(--muted); font-weight: 800; }
+    @media (max-width: 860px) {
+      header, .grid { display: block; }
+      header .actions { margin-top: 14px; }
+      .panel { margin-bottom: 14px; }
+      .fields, .metrics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Baiou 运维面板</h1>
+        <p>查看运行状态，调整常用产品配置。密钥只显示配置状态，不回显明文。</p>
+      </div>
+      <div class="actions">
+        <input id="token" type="password" placeholder="管理员 token" autocomplete="current-password">
+        <button id="load" type="button">进入</button>
+      </div>
+    </header>
+    <section class="grid">
+      <div class="panel">
+        <h2>运行状态</h2>
+        <div id="metrics" class="metrics"></div>
+        <div class="secret-list" id="secrets"></div>
+        <div class="actions" style="margin-top:14px">
+          <a class="button secondary" href="/api/v1/admin/feedback/export.csv" id="export">导出反馈 CSV</a>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>产品配置</h2>
+        <form id="configForm">
+          <div class="fields">
+            <label>默认模式
+              <select name="default_mode">
+                <option value="bailian_rag_fast">百炼快速模式</option>
+                <option value="bailian_rag_quality">百炼质量模式</option>
+              </select>
+            </label>
+            <label>百炼知识库 ID
+              <input name="vector_store_ids" placeholder="n7s0ou2dpt">
+            </label>
+            <label>RAG 召回数量
+              <input name="rag_max_num_results" type="number" min="1" max="10">
+            </label>
+            <label>每日额度
+              <input name="daily_reply_quota" type="number" min="1">
+            </label>
+            <label>最大会话数
+              <input name="max_conversations_per_user" type="number" min="1">
+            </label>
+            <label>回复参考历史轮数
+              <input name="history_turns_for_reply" type="number" min="0">
+            </label>
+            <label>每次最大图片数
+              <input name="max_images_per_reply" type="number" min="1" max="10">
+            </label>
+            <label>最少图片数
+              <input name="min_images_per_reply" type="number" min="0" max="10">
+            </label>
+            <label>单图大小 MB
+              <input name="max_image_mb" type="number" min="1" max="50">
+            </label>
+            <label>截图保留天数
+              <input name="upload_days" type="number" min="1" max="365">
+            </label>
+            <label>运行明细保留天数
+              <input name="run_days" type="number" min="1" max="365">
+            </label>
+            <label>公告状态
+              <select name="announcement_status">
+                <option value="active">显示</option>
+                <option value="inactive">隐藏</option>
+              </select>
+            </label>
+            <label class="full">公告标题
+              <input name="announcement_title">
+            </label>
+            <label class="full">公告内容
+              <textarea name="announcement_content"></textarea>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit">保存配置</button>
+            <button class="secondary" type="button" id="reload">刷新</button>
+            <span class="status" id="status"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+    <section class="panel feedback">
+      <h2>最近反馈</h2>
+      <table>
+        <thead><tr><th>时间</th><th>评分</th><th>备注</th><th>问题</th><th>回复</th></tr></thead>
+        <tbody id="feedback"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const tokenInput = document.querySelector("#token");
+    const statusEl = document.querySelector("#status");
+    const form = document.querySelector("#configForm");
+    tokenInput.value = localStorage.getItem("baiou_admin_token") || "";
+
+    function headers() {
+      return { "Content-Type": "application/json", "Authorization": "Bearer " + tokenInput.value.trim() };
+    }
+    async function api(path, options = {}) {
+      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await res.json() : await res.text();
+      if (!res.ok || data.ok === false) throw new Error((data.error && data.error.message) || "请求失败");
+      return data;
+    }
+    function setStatus(text) { statusEl.textContent = text; }
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+    function fillMetrics(stats) {
+      const totals = stats.totals || {};
+      const items = [
+        ["今日生成", totals.today_reply_runs || 0],
+        ["今日上传", totals.today_uploads || 0],
+        ["今日反馈", totals.today_feedback || 0],
+        ["用户总数", totals.users || 0],
+        ["回复总数", totals.reply_runs || 0],
+        ["反馈总数", totals.feedback || 0],
+      ];
+      document.querySelector("#metrics").innerHTML = items.map(([k, v]) => `<div class="metric"><b>${v}</b><span>${k}</span></div>`).join("");
+    }
+    function fillSecrets(secrets) {
+      const labels = { dashscope_api_key: "DashScope Key", deepseek_api_key: "DeepSeek Key", wechat_appid: "微信 AppID", wechat_secret: "微信 AppSecret", admin_token: "后台 Token" };
+      document.querySelector("#secrets").innerHTML = Object.entries(labels).map(([key, label]) => {
+        const ok = !!secrets[key];
+        return `<div class="secret"><span>${label}</span><span class="tag ${ok ? "ok" : "warn"}">${ok ? "已配置" : "未配置"}</span></div>`;
+      }).join("");
+    }
+    function fillConfig(cfg) {
+      form.default_mode.value = cfg.runtime.default_mode || "bailian_rag_fast";
+      form.vector_store_ids.value = (cfg.rag.vector_store_ids || []).join(",");
+      form.rag_max_num_results.value = cfg.rag.max_num_results || 3;
+      form.daily_reply_quota.value = cfg.limits.daily_reply_quota || 20;
+      form.max_conversations_per_user.value = cfg.limits.max_conversations_per_user || 5;
+      form.history_turns_for_reply.value = cfg.limits.history_turns_for_reply || 6;
+      form.max_images_per_reply.value = cfg.limits.max_images_per_reply || 3;
+      form.min_images_per_reply.value = cfg.limits.min_images_per_reply || 1;
+      form.max_image_mb.value = cfg.limits.max_image_mb || 8;
+      form.upload_days.value = cfg.retention.upload_days || 30;
+      form.run_days.value = cfg.retention.run_days || 30;
+      form.announcement_status.value = cfg.announcement.status || "active";
+      form.announcement_title.value = cfg.announcement.title || "";
+      form.announcement_content.value = cfg.announcement.content || "";
+      fillSecrets(cfg.secrets || {});
+      const exportLink = document.querySelector("#export");
+      exportLink.onclick = event => {
+        event.preventDefault();
+        window.open("/api/v1/admin/feedback/export.csv?token=" + encodeURIComponent(tokenInput.value.trim()), "_blank");
+      };
+    }
+    function fillFeedback(rows) {
+      document.querySelector("#feedback").innerHTML = (rows || []).map(row => `<tr><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.rating)}</td><td>${escapeHtml(row.notes)}</td><td>${escapeHtml(row.question)}</td><td>${escapeHtml(row.reply)}</td></tr>`).join("");
+    }
+    async function loadAll() {
+      localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
+      setStatus("加载中...");
+      const [cfg, stats, feedback] = await Promise.all([
+        api("/api/v1/admin/config"),
+        api("/api/v1/admin/stats"),
+        api("/api/v1/admin/feedback?limit=20"),
+      ]);
+      fillConfig(cfg.config);
+      fillMetrics(stats.stats);
+      fillFeedback(feedback.feedback);
+      setStatus("已加载");
+    }
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      setStatus("保存中...");
+      const payload = {
+        runtime: { default_mode: form.default_mode.value },
+        rag: { vector_store_ids: form.vector_store_ids.value, max_num_results: form.rag_max_num_results.value },
+        limits: {
+          daily_reply_quota: form.daily_reply_quota.value,
+          max_conversations_per_user: form.max_conversations_per_user.value,
+          history_turns_for_reply: form.history_turns_for_reply.value,
+          max_images_per_reply: form.max_images_per_reply.value,
+          min_images_per_reply: form.min_images_per_reply.value,
+          max_image_mb: form.max_image_mb.value,
+        },
+        retention: { upload_days: form.upload_days.value, run_days: form.run_days.value },
+        announcement: { title: form.announcement_title.value, content: form.announcement_content.value, status: form.announcement_status.value },
+      };
+      const saved = await api("/api/v1/admin/config", { method: "POST", body: JSON.stringify(payload) });
+      fillConfig(saved.config);
+      setStatus("已保存，当前服务已刷新配置");
+    });
+    document.querySelector("#load").addEventListener("click", loadAll);
+    document.querySelector("#reload").addEventListener("click", loadAll);
+  </script>
+</body>
+</html>"""
+
+
 def parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def configured_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
 
 
 def normalize_extension(value: Any) -> str:

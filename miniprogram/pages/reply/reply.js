@@ -13,6 +13,7 @@ Page({
     limits: app.globalData.limits || {},
     serviceReady: false,
     result: null,
+    feedbackNotes: "",
     loading: false,
     drawerOpen: false,
     draftTitle: "",
@@ -30,7 +31,7 @@ Page({
   async ensureSession() {
     try {
       if (!app.globalData.token) {
-        const login = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
+        const login = await this.loginWithWechatCode()
         app.globalData.token = login.token
         app.globalData.user = login.user
         app.globalData.limits = login.limits || app.globalData.limits
@@ -43,6 +44,34 @@ Page({
       this.setData({ limits: app.globalData.limits || this.data.limits, serviceReady: false })
       this.toast(err.message || "初始化失败")
     }
+  },
+
+  loginWithWechatCode() {
+    return new Promise((resolve, reject) => {
+      wx.login({
+        success: async res => {
+          try {
+            const login = await api.request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
+            resolve(login)
+          } catch (err) {
+            try {
+              const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
+              resolve(fallback)
+            } catch (fallbackErr) {
+              reject(fallbackErr)
+            }
+          }
+        },
+        fail: async () => {
+          try {
+            const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
+            resolve(fallback)
+          } catch (fallbackErr) {
+            reject(fallbackErr)
+          }
+        }
+      })
+    })
   },
 
   async loadConversations() {
@@ -138,6 +167,10 @@ Page({
     this.setData({ context: e.detail.value })
   },
 
+  onFeedbackNotesInput(e) {
+    this.setData({ feedbackNotes: e.detail.value })
+  },
+
   selectMode(e) {
     this.setData({ mode: e.currentTarget.dataset.mode })
   },
@@ -208,6 +241,7 @@ Page({
         result: data.reply_run,
         limits: data.limits || this.data.limits,
         images: [],
+        feedbackNotes: "",
         analysisOpen: false,
         debugOpen: false
       })
@@ -231,7 +265,8 @@ Page({
         data: {
           conversation_id: this.data.currentConversation.conversation_id,
           run_id: this.data.result.run_id,
-          rating: e.currentTarget.dataset.rating
+          rating: e.currentTarget.dataset.rating,
+          notes: this.data.feedbackNotes
         }
       })
       this.toast("已记录")

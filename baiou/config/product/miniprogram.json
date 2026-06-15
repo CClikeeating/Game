@@ -17,7 +17,9 @@
       "bailian_rag_quality": "质量模式"
     }
   },
-  "auth": {"default_user_id": "dev_user", "dev_login_enabled": true},
+  "auth": {"default_user_id": "dev_user", "dev_login_enabled": true, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
+  "admin": {"token": ""},
+  "retention": {"upload_days": 30, "run_days": 30},
   "announcements": [
     {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放回复模块，聊天窗口、反馈和额度已经接入。", "status": "active"}
   ],
