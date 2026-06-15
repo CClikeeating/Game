@@ -253,6 +253,17 @@ def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Pa
     assert "reply 1" in export.get_data(as_text=True)
 
 
+def test_admin_page_exports_csv_with_authorization_header(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    html = client.get("/admin").get_data(as_text=True)
+
+    assert "?token=" not in html
+    assert 'fetch("/api/v1/admin/feedback/export.csv"' in html
+    assert '"Authorization": "Bearer " + tokenInput.value.trim()' in html
+
+
 def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) -> None:
     config = make_config(tmp_path, admin_token="admin-secret", admin_config_path=str(tmp_path / "admin_config.json"))
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)

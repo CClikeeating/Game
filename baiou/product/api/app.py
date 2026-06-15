@@ -985,6 +985,28 @@ def admin_page_html() -> str:
         return `<div class="secret"><span>${label}</span><span class="tag ${ok ? "ok" : "warn"}">${ok ? "已配置" : "未配置"}</span></div>`;
       }).join("");
     }
+    async function downloadFeedbackCsv() {
+      localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
+      setStatus("导出中...");
+      const res = await fetch("/api/v1/admin/feedback/export.csv", {
+        headers: { "Authorization": "Bearer " + tokenInput.value.trim() },
+      });
+      if (!res.ok) {
+        const contentType = res.headers.get("content-type") || "";
+        const data = contentType.includes("application/json") ? await res.json() : await res.text();
+        throw new Error((data.error && data.error.message) || data || "导出失败");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "baiou_feedback.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus("已导出");
+    }
     function fillConfig(cfg) {
       form.default_mode.value = cfg.runtime.default_mode || "bailian_rag_fast";
       form.vector_store_ids.value = (cfg.rag.vector_store_ids || []).join(",");
@@ -1002,9 +1024,13 @@ def admin_page_html() -> str:
       form.announcement_content.value = cfg.announcement.content || "";
       fillSecrets(cfg.secrets || {});
       const exportLink = document.querySelector("#export");
-      exportLink.onclick = event => {
+      exportLink.onclick = async event => {
         event.preventDefault();
-        window.open("/api/v1/admin/feedback/export.csv?token=" + encodeURIComponent(tokenInput.value.trim()), "_blank");
+        try {
+          await downloadFeedbackCsv();
+        } catch (error) {
+          setStatus(error.message);
+        }
       };
     }
     function fillFeedback(rows) {
