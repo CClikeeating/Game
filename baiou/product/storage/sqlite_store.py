@@ -106,6 +106,24 @@ class ProductStore:
                     PRIMARY KEY(scope, quota_key, usage_date)
                 );
 
+                CREATE TABLE IF NOT EXISTS user_quota_overrides (
+                    user_id TEXT PRIMARY KEY,
+                    daily_reply_quota INTEGER,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS login_events (
+                    event_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    ip_hash TEXT NOT NULL,
+                    ip_display TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS announcements (
                     announcement_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
@@ -160,7 +178,7 @@ class ProductStore:
             row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
 
-    def create_session(self, user_id: str, ttl_days: int = 30) -> str:
+    def create_session(self, user_id: str, ttl_days: int = 30, ip_hash: str = "", ip_display: str = "") -> str:
         token = secrets.token_urlsafe(32)
         stamp = now_iso()
         expires_at = (datetime.now() + timedelta(days=max(1, int(ttl_days)))).isoformat(timespec="seconds")
@@ -172,6 +190,14 @@ class ProductStore:
                 """,
                 (token, user_id, stamp, expires_at),
             )
+            if ip_hash:
+                conn.execute(
+                    """
+                    INSERT INTO login_events(event_id, user_id, ip_hash, ip_display, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (new_id("login"), user_id, ip_hash, ip_display, stamp),
+                )
         return token
 
     def user_id_for_session(self, token: str) -> str:
@@ -381,6 +407,11 @@ class ProductStore:
             ).fetchone()
         return int(row["units"] if row else 0)
 
+    def total_usage(self, user_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COALESCE(SUM(reply_count), 0) AS total FROM daily_usage WHERE user_id = ?", (user_id,)).fetchone()
+        return int(row["total"] if row else 0)
+
     def increment_quota_units(self, scope: str, quota_key: str, units: int = 1) -> int:
         today = date.today().isoformat()
         stamp = now_iso()
@@ -397,6 +428,138 @@ class ProductStore:
                 (scope, quota_key, today, amount, stamp),
             )
         return self.quota_units_today(scope, quota_key)
+
+    def get_user_quota_override(self, user_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM user_quota_overrides WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_user_quota_override(self, user_id: str, daily_reply_quota: int | None, disabled: bool = False) -> dict[str, Any]:
+        self.ensure_user(user_id)
+        stamp = now_iso()
+        quota = None if daily_reply_quota is None else max(0, int(daily_reply_quota))
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_quota_overrides(user_id, daily_reply_quota, disabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    daily_reply_quota = excluded.daily_reply_quota,
+                    disabled = excluded.disabled,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, quota, 1 if disabled else 0, stamp, stamp),
+            )
+        return self.get_user_quota_override(user_id) or {}
+
+    def clear_user_quota_override(self, user_id: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM user_quota_overrides WHERE user_id = ?", (user_id,))
+        return cur.rowcount > 0
+
+    def list_admin_users(self, limit: int = 100) -> list[dict[str, Any]]:
+        today = date.today().isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.user_id,
+                    u.nickname,
+                    CASE WHEN COALESCE(u.openid, '') = '' THEN 0 ELSE 1 END AS has_openid,
+                    u.plan,
+                    u.created_at,
+                    u.updated_at,
+                    COALESCE(today_usage.reply_count, 0) AS today_usage,
+                    COALESCE(total_usage.total_usage, 0) AS total_usage,
+                    quota.daily_reply_quota AS quota_override,
+                    COALESCE(quota.disabled, 0) AS disabled,
+                    login.ip_hash AS last_ip_hash,
+                    login.ip_display AS last_ip_display,
+                    login.created_at AS last_login_at,
+                    session.last_session_at,
+                    activity.last_activity_at
+                FROM users u
+                LEFT JOIN daily_usage today_usage
+                    ON today_usage.user_id = u.user_id AND today_usage.usage_date = ?
+                LEFT JOIN (
+                    SELECT user_id, SUM(reply_count) AS total_usage
+                    FROM daily_usage
+                    GROUP BY user_id
+                ) total_usage ON total_usage.user_id = u.user_id
+                LEFT JOIN user_quota_overrides quota ON quota.user_id = u.user_id
+                LEFT JOIN (
+                    SELECT user_id, MAX(created_at) AS last_session_at
+                    FROM sessions
+                    GROUP BY user_id
+                ) session ON session.user_id = u.user_id
+                LEFT JOIN (
+                    SELECT le.user_id, le.ip_hash, le.ip_display, le.created_at
+                    FROM login_events le
+                    JOIN (
+                        SELECT user_id, MAX(created_at) AS created_at
+                        FROM login_events
+                        GROUP BY user_id
+                    ) latest ON latest.user_id = le.user_id AND latest.created_at = le.created_at
+                ) login ON login.user_id = u.user_id
+                LEFT JOIN (
+                    SELECT user_id, MAX(stamp) AS last_activity_at
+                    FROM (
+                        SELECT user_id, MAX(updated_at) AS stamp FROM reply_runs GROUP BY user_id
+                        UNION ALL
+                        SELECT user_id, MAX(created_at) AS stamp FROM uploads GROUP BY user_id
+                        UNION ALL
+                        SELECT user_id, MAX(created_at) AS stamp FROM feedback GROUP BY user_id
+                        UNION ALL
+                        SELECT user_id, MAX(created_at) AS stamp FROM sessions GROUP BY user_id
+                    )
+                    GROUP BY user_id
+                ) activity ON activity.user_id = u.user_id
+                ORDER BY COALESCE(activity.last_activity_at, u.updated_at, u.created_at) DESC
+                LIMIT ?
+                """,
+                (today, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_ip_usage(self, limit: int = 100) -> list[dict[str, Any]]:
+        today = date.today().isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    q.quota_key AS ip_hash,
+                    q.units,
+                    q.updated_at AS last_request_at,
+                    latest.ip_display AS ip_display,
+                    latest.user_count,
+                    latest.last_login_at
+                FROM quota_usage q
+                LEFT JOIN (
+                    SELECT
+                        ip_hash,
+                        MAX(ip_display) AS ip_display,
+                        COUNT(DISTINCT user_id) AS user_count,
+                        MAX(created_at) AS last_login_at
+                    FROM login_events
+                    GROUP BY ip_hash
+                ) latest ON latest.ip_hash = q.quota_key
+                WHERE q.scope = 'ip' AND q.usage_date = ?
+                ORDER BY q.units DESC, q.updated_at DESC
+                LIMIT ?
+                """,
+                (today, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_reply_run_for_admin(self, run_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM reply_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["answer"] = decode_json(item.pop("answer_json"), {})
+        item["reference_segments"] = decode_json(item.pop("reference_segments_json"), [])
+        return item
 
     def add_feedback(self, user_id: str, conversation_id: str, run_id: str, rating: str, notes: str = "") -> dict[str, Any] | None:
         if not self.get_conversation(user_id, conversation_id) or not self.get_reply_run(user_id, run_id):

@@ -11,7 +11,7 @@ def web_alpha_page_html(config: dict[str, Any]) -> str:
         "limits": {
             "daily_reply_quota": config.get("daily_reply_quota", 20),
             "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
-            "web_site_daily_quota": config.get("web_site_daily_quota", 300),
+            "web_site_daily_quota": config.get("web_site_daily_quota", 500),
             "max_images_per_reply": config.get("max_images_per_reply", 3),
             "min_images_per_reply": config.get("min_images_per_reply", 1),
             "max_image_mb": config.get("max_image_mb", 8),
@@ -27,20 +27,20 @@ PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Baiou Alpha</title>
+  <title>Baiou</title>
   <style>
     :root {
-      --bg: #f4f1ea;
-      --paper: #fffdf8;
-      --ink: #172033;
-      --muted: #687083;
-      --line: #d9d2c3;
-      --accent: #166b5d;
-      --accent-2: #b35235;
-      --soft: #eaf4f0;
-      --warn: #8a4a18;
+      --bg: #f6f7f4;
+      --surface: #ffffff;
+      --surface-2: #eef3f1;
+      --ink: #162033;
+      --muted: #667085;
+      --line: #d9e1dd;
+      --accent: #176b5d;
+      --accent-2: #c24f3d;
+      --blue: #2f5f98;
       --bad: #b42318;
-      --shadow: 0 18px 42px rgba(42, 36, 27, .10);
+      --shadow: 0 16px 42px rgba(21, 36, 52, .10);
       --radius: 8px;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
@@ -49,15 +49,14 @@ PAGE = """<!doctype html>
       margin: 0;
       min-height: 100vh;
       background:
-        linear-gradient(90deg, rgba(22, 107, 93, .055) 1px, transparent 1px),
-        linear-gradient(180deg, rgba(22, 107, 93, .04) 1px, transparent 1px),
+        linear-gradient(135deg, rgba(23, 107, 93, .09), transparent 34%),
+        linear-gradient(315deg, rgba(194, 79, 61, .08), transparent 30%),
         var(--bg);
-      background-size: 34px 34px;
       color: var(--ink);
     }
     button, input, textarea { font: inherit; }
     button {
-      min-height: 44px;
+      min-height: 46px;
       border: 0;
       border-radius: var(--radius);
       padding: 0 16px;
@@ -66,133 +65,87 @@ PAGE = """<!doctype html>
       font-weight: 800;
       cursor: pointer;
     }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid rgba(47, 95, 152, .28); outline-offset: 2px; }
     button:disabled { opacity: .55; cursor: not-allowed; }
-    button.secondary { background: #eef1ed; color: var(--ink); border: 1px solid var(--line); }
-    button.ghost { background: transparent; color: var(--accent); border: 1px solid #b7d7ce; }
     button.mode { background: #fff; color: var(--muted); border: 1px solid var(--line); }
     button.mode.active { background: var(--ink); color: #fff; border-color: var(--ink); }
-    .shell { width: min(1180px, 100%); margin: 0 auto; padding: 18px; }
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      margin-bottom: 14px;
-    }
+    button.ghost { background: #fff; color: var(--accent); border: 1px solid #b8d6ce; }
+    .shell { width: min(1080px, 100%); margin: 0 auto; padding: 12px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
-    .brand-line { color: var(--muted); font-size: 13px; margin-top: 3px; }
-    .quota { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .pill {
-      border: 1px solid var(--line);
-      background: rgba(255, 253, 248, .86);
-      border-radius: 999px;
-      padding: 7px 10px;
-      color: var(--muted);
-      font-size: 13px;
-      white-space: nowrap;
-    }
-    .layout { display: grid; grid-template-columns: minmax(320px, 430px) minmax(0, 1fr); gap: 14px; align-items: start; }
-    .panel {
-      background: rgba(255, 253, 248, .96);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-    .panel-head { padding: 16px 16px 0; }
     h2 { margin: 0; font-size: 17px; letter-spacing: 0; }
-    .panel-body { padding: 16px; }
-    .field { display: grid; gap: 7px; margin-bottom: 14px; }
-    label, .label { font-size: 13px; font-weight: 800; color: #2d3748; }
+    h3 { margin: 0 0 8px; font-size: 13px; color: #344054; }
+    .subtle { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 4px 0 0; }
+    .quota { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .pill { border: 1px solid var(--line); background: rgba(255,255,255,.86); border-radius: 999px; padding: 7px 10px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 12px; align-items: start; }
+    .panel { background: rgba(255,255,255,.95); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .panel-head { padding: 15px 15px 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .panel-body { padding: 15px; }
+    .field { display: grid; gap: 7px; margin-bottom: 13px; }
+    label, .label { color: #263445; font-size: 13px; font-weight: 800; }
     textarea, input[type="text"], input[type="password"] {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      padding: 11px 12px;
+      padding: 12px;
       background: #fff;
       color: var(--ink);
       outline: none;
     }
-    textarea { resize: vertical; min-height: 92px; line-height: 1.55; }
-    textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(22, 107, 93, .12); }
+    textarea { min-height: 88px; resize: vertical; line-height: 1.55; }
+    #question { min-height: 74px; font-size: 16px; }
     .upload {
       display: grid;
       gap: 8px;
-      border: 1px dashed #b8ad98;
+      border: 1px dashed #9eb8b0;
       border-radius: var(--radius);
-      padding: 14px;
-      background: #fbfaf5;
+      padding: 12px;
+      background: var(--surface-2);
     }
     .privacy { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .mode-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .mode small { display: block; margin-top: 2px; font-weight: 600; opacity: .78; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .dry { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
-    .status { min-height: 22px; color: var(--muted); font-size: 13px; }
+    .status { min-height: 21px; color: var(--muted); font-size: 13px; }
     .status.bad { color: var(--bad); }
-    .gate {
-      max-width: 460px;
-      margin: 12vh auto 0;
-    }
+    .gate { max-width: 420px; margin: 12vh auto 0; }
     .gate h1 { font-size: 30px; }
-    .result-empty {
-      min-height: 320px;
-      display: grid;
-      place-items: center;
-      color: var(--muted);
-      text-align: center;
-      padding: 24px;
-    }
+    .hidden { display: none !important; }
+    .result-empty { min-height: 360px; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 24px; }
     .answer {
-      border: 1px solid #b7d7ce;
-      background: var(--soft);
+      border: 1px solid #a8d3c8;
+      background: linear-gradient(180deg, #edf8f4, #f8fffc);
       border-radius: var(--radius);
-      padding: 16px;
+      padding: 18px;
       white-space: pre-wrap;
-      line-height: 1.7;
-      font-size: 16px;
+      line-height: 1.75;
+      font-size: 18px;
+      font-weight: 750;
     }
-    .result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
-    .box {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fff;
-      padding: 12px;
-      min-height: 86px;
-    }
-    .box h3 { margin: 0 0 8px; font-size: 13px; }
-    .box pre, details pre {
-      margin: 0;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      color: var(--muted);
-      font-family: inherit;
-      font-size: 13px;
-      line-height: 1.55;
-    }
-    details {
-      margin-top: 10px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fff;
-      padding: 12px;
-    }
-    summary { cursor: pointer; font-weight: 800; font-size: 13px; }
-    .refs { display: grid; gap: 8px; margin-top: 10px; }
-    .ref { border-top: 1px solid #edf0e9; padding-top: 8px; }
+    .assist { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .box { border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 12px; min-height: 88px; }
+    .box pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-family: inherit; font-size: 13px; line-height: 1.55; }
     .feedback { display: grid; gap: 8px; margin-top: 12px; }
     .feedback-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .hidden { display: none !important; }
-    @media (max-width: 880px) {
-      .shell { padding: 12px; }
-      .topbar { display: block; }
-      .quota { justify-content: flex-start; margin-top: 10px; }
-      .layout, .result-grid { grid-template-columns: 1fr; }
-      .mode-row { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 820px) {
+      .shell { padding: 10px; }
+      .topbar { align-items: flex-start; }
+      .layout { grid-template-columns: 1fr; }
+      .input-panel { order: 1; }
+      .result-panel { order: 2; }
+      .assist { grid-template-columns: 1fr; }
+      .quota { justify-content: flex-start; }
     }
-    @media (max-width: 430px) {
-      h1 { font-size: 21px; }
+    @media (max-width: 460px) {
+      h1 { font-size: 22px; }
+      .topbar { display: grid; }
       .mode-row { grid-template-columns: 1fr; }
       .actions { display: grid; }
       button { width: 100%; }
+      .dry { justify-content: center; }
+      .answer { font-size: 17px; }
     }
   </style>
 </head>
@@ -200,15 +153,15 @@ PAGE = """<!doctype html>
   <main class="shell">
     <section id="gate" class="gate panel">
       <div class="panel-body">
-        <h1>Baiou Alpha</h1>
-        <p class="brand-line">内测工作台</p>
+        <h1>Baiou</h1>
+        <p class="subtle">内测访问</p>
         <div class="field" style="margin-top:18px">
-          <label for="accessCode">内测访问码</label>
+          <label for="accessCode">访问码</label>
           <input id="accessCode" type="password" autocomplete="one-time-code">
         </div>
         <div class="actions">
           <button id="loginBtn" type="button">进入</button>
-          <span id="loginStatus" class="status"></span>
+          <span id="loginStatus" class="status" aria-live="polite"></span>
         </div>
       </div>
     </section>
@@ -216,23 +169,26 @@ PAGE = """<!doctype html>
     <section id="app" class="hidden">
       <div class="topbar">
         <div>
-          <h1>Baiou Alpha</h1>
-          <p class="brand-line">回复工作台</p>
+          <h1>Baiou</h1>
+          <p class="subtle">把截图变成一条更合适的回复</p>
         </div>
         <div class="quota">
           <span class="pill" id="userQuota">今日剩余 --</span>
-          <span class="pill" id="ipQuota">IP 剩余 --</span>
+          <span class="pill" id="siteQuota">全站剩余 --</span>
         </div>
       </div>
       <div class="layout">
-        <section class="panel">
-          <div class="panel-head"><h2>输入</h2></div>
+        <section class="panel input-panel">
+          <div class="panel-head">
+            <h2>生成回复</h2>
+            <span class="pill" id="modeCost">扣费 --</span>
+          </div>
           <div class="panel-body">
             <div class="field">
               <label for="images">聊天截图</label>
               <div class="upload">
                 <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
-                <div class="privacy" id="uploadHint">截图会临时保存用于本次分析和质量排查，并按保留周期清理；请不要上传身份证、银行卡、住址等敏感信息。</div>
+                <div class="privacy" id="uploadHint">截图仅用于本次分析与服务优化，并会按保留周期清理；请勿上传身份证、银行卡、住址等敏感信息。</div>
               </div>
             </div>
             <div class="field">
@@ -241,26 +197,26 @@ PAGE = """<!doctype html>
             </div>
             <div class="field">
               <label for="context">补充背景</label>
-              <textarea id="context" placeholder="可选：认识多久、关系阶段、你希望回复更轻松还是更认真"></textarea>
+              <textarea id="context" placeholder="可选：关系阶段、刚才发生了什么、你想要的语气"></textarea>
             </div>
             <div class="field">
               <div class="label">模式</div>
               <div class="mode-row">
-                <button class="mode active" type="button" data-mode="bailian_rag_fast">快速模式</button>
-                <button class="mode" type="button" data-mode="bailian_rag_quality">质量模式</button>
+                <button class="mode active" type="button" data-mode="bailian_rag_fast">快速<small>日常够用</small></button>
+                <button class="mode" type="button" data-mode="bailian_rag_quality">质量<small>更细致</small></button>
               </div>
             </div>
             <div class="actions">
               <label class="dry"><input id="dryRun" type="checkbox"> dry-run</label>
               <button id="generateBtn" type="button">生成推荐回复</button>
             </div>
-            <div id="workStatus" class="status"></div>
+            <div id="workStatus" class="status" aria-live="polite"></div>
           </div>
         </section>
 
-        <section class="panel">
-          <div class="panel-head"><h2>结果</h2></div>
-          <div id="result" class="panel-body result-empty">生成后，推荐回复和分析会显示在这里。</div>
+        <section class="panel result-panel">
+          <div class="panel-head"><h2>推荐回复</h2></div>
+          <div id="result" class="panel-body result-empty">生成后会显示在这里。</div>
         </section>
       </div>
     </section>
@@ -302,10 +258,15 @@ PAGE = """<!doctype html>
     function updateLimits(limits) {
       state.limits = limits || state.limits || {};
       $("#userQuota").textContent = "今日剩余 " + (state.limits.daily_reply_remaining ?? "--");
-      $("#ipQuota").textContent = "IP 剩余 " + (state.limits.web_ip_daily_remaining ?? "--");
+      $("#siteQuota").textContent = "全站剩余 " + (state.limits.web_site_daily_remaining ?? "--");
       const max = state.limits.max_images_per_reply || 3;
       const mb = state.limits.max_image_mb || 8;
-      $("#uploadHint").textContent = `最多 ${max} 张，单张 ${mb}MB。截图会临时保存用于本次分析和质量排查，并按保留周期清理；请不要上传身份证、银行卡、住址等敏感信息。`;
+      $("#uploadHint").textContent = `最多 ${max} 张，单张 ${mb}MB。截图仅用于本次分析与服务优化，并会按保留周期清理；请勿上传身份证、银行卡、住址等敏感信息。`;
+      updateModeCost();
+    }
+    function updateModeCost() {
+      const costs = state.limits.mode_unit_costs || {};
+      $("#modeCost").textContent = "本次消耗 " + (costs[state.mode] || 1);
     }
     async function loadSession() {
       if (!state.token) return showApp(false);
@@ -340,6 +301,7 @@ PAGE = """<!doctype html>
     function selectMode(mode) {
       state.mode = mode;
       document.querySelectorAll("button.mode").forEach(button => button.classList.toggle("active", button.dataset.mode === mode));
+      updateModeCost();
     }
     async function ensureConversation() {
       if (state.conversation && state.conversation.conversation_id) return state.conversation;
@@ -379,24 +341,14 @@ PAGE = """<!doctype html>
     }
     function renderResult(run) {
       const answer = run.answer || {};
-      const refs = run.reference_segments || [];
       $("#result").classList.remove("result-empty");
       $("#result").innerHTML = `
         <div class="answer">${escapeHtml(answer.reply || "暂无回复")}</div>
-        <div class="result-grid">
-          <div class="box"><h3>教练分析</h3><pre>${escapeHtml(answer.coach_analysis || "无")}</pre></div>
+        <div class="assist">
+          <div class="box"><h3>分析</h3><pre>${escapeHtml(answer.coach_analysis || "无")}</pre></div>
           <div class="box"><h3>下一步</h3><pre>${escapeHtml(answer.next_step || "无")}</pre></div>
-          <div class="box"><h3>风险提醒</h3><pre>${escapeHtml(answer.risk_warning || "无")}</pre></div>
-          <div class="box"><h3>状态</h3><pre>${escapeHtml(run.display_mode || run.mode)} · ${escapeHtml(run.status)}</pre></div>
+          <div class="box"><h3>提醒</h3><pre>${escapeHtml(answer.risk_warning || "无")}</pre></div>
         </div>
-        <details>
-          <summary>截图理解</summary>
-          <pre style="margin-top:8px">${escapeHtml(run.image_understanding || "暂无截图理解")}</pre>
-        </details>
-        <details>
-          <summary>参考片段</summary>
-          <div class="refs">${refs.length ? refs.map(renderRef).join("") : "<pre style=\\"margin-top:8px\\">暂无参考片段</pre>"}</div>
-        </details>
         <div class="feedback">
           <div class="feedback-actions">
             <button class="ghost" type="button" data-rating="good">好</button>
@@ -404,13 +356,9 @@ PAGE = """<!doctype html>
             <button class="ghost" type="button" data-rating="bad">不好</button>
           </div>
           <input id="feedbackNotes" type="text" placeholder="反馈备注，可选">
-          <div id="feedbackStatus" class="status"></div>
+          <div id="feedbackStatus" class="status" aria-live="polite"></div>
         </div>`;
       document.querySelectorAll("[data-rating]").forEach(button => button.addEventListener("click", () => sendFeedback(button.dataset.rating)));
-    }
-    function renderRef(ref) {
-      return `<div class="ref"><pre>${escapeHtml(ref.segment_id || ref.filename || "参考片段")}
-${escapeHtml(ref.text || "")}</pre></div>`;
     }
     async function sendFeedback(rating) {
       if (!state.lastRun || !state.conversation) return;

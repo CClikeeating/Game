@@ -127,7 +127,9 @@ def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch
     forged = client.get("/api/v1/me", headers={"Authorization": "Bearer fake_user"})
     anonymous = client.get("/api/v1/me")
 
-    assert "Baiou Alpha" in html
+    assert "Baiou" in html
+    assert "截图理解" not in html
+    assert "参考片段" not in html
     assert "test-code" not in html
     assert denied.status_code == 401
     assert dev_login.status_code == 401
@@ -286,6 +288,8 @@ def test_feedback_binds_to_reply_without_exposing_internal_paths(monkeypatch, tm
     assert feedback.get_json()["feedback"]["run_id"] == run_id
     assert "secret-output" not in str(data)
     assert "output_dir" not in str(data)
+    assert "image_understanding" not in data["reply_run"]
+    assert "reference_segments" not in data["reply_run"]
 
 
 def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Path) -> None:
@@ -308,6 +312,7 @@ def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Pa
     assert denied.status_code == 401
     assert stats.status_code == 200
     assert stats.get_json()["stats"]["totals"]["reply_runs"] == 1
+    assert "site_quota" in stats.get_json()["stats"]
     assert feedback.get_json()["feedback"][0]["notes"] == "too much"
     assert feedback.get_json()["feedback"][0]["reply"] == "reply 1"
     assert export.status_code == 200
@@ -324,6 +329,88 @@ def test_admin_page_exports_csv_with_authorization_header(monkeypatch, tmp_path:
     assert "?token=" not in html
     assert 'fetch("/api/v1/admin/feedback/export.csv"' in html
     assert '"Authorization": "Bearer " + tokenInput.value.trim()' in html
+
+
+def test_admin_lists_users_and_ip_usage(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        admin_token="admin-secret",
+        web_access_required=True,
+        web_access_codes=["test-code"],
+        web_ip_daily_quota=10,
+        web_site_daily_quota=10,
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    login_headers = {"X-Forwarded-For": "203.0.113.8"}
+    login = client.post("/api/v1/auth/web-login", headers=login_headers, json={"access_code": "test-code"}).get_json()
+    headers = {"Authorization": f"Bearer {login['token']}", "X-Forwarded-For": "203.0.113.8"}
+    conv = client.get("/api/v1/conversations", headers=headers).get_json()["conversations"][0]["conversation_id"]
+    client.post("/api/v1/replies", headers=headers, json={"conversation_id": conv, "question": "hello"})
+
+    users = client.get("/api/v1/admin/users", headers=admin_headers()).get_json()["users"]
+    ip_usage = client.get("/api/v1/admin/ip-usage", headers=admin_headers()).get_json()["ip_usage"]
+
+    assert users[0]["user_id"].startswith("web_")
+    assert users[0]["last_ip_display"] == "203.0.113.*"
+    assert users[0]["last_ip_hash"]
+    assert users[0]["today_usage"] == 1
+    assert ip_usage[0]["ip_display"] == "203.0.113.*"
+    assert ip_usage[0]["today_units"] == 1
+
+
+def test_user_quota_override_zero_and_clear_restore_default(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=2)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    blocked_override = client.patch(
+        "/api/v1/admin/users/test_user/quota",
+        headers=admin_headers(),
+        json={"daily_reply_quota": 0},
+    )
+    blocked = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "blocked"})
+    cleared = client.delete("/api/v1/admin/users/test_user/quota", headers=admin_headers())
+    restored = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "restored"})
+
+    assert blocked_override.status_code == 200
+    assert blocked.status_code == 429
+    assert blocked.get_json()["error"]["code"] == "daily_quota_exhausted"
+    assert cleared.status_code == 200
+    assert restored.status_code == 200
+    assert len(captured) == 1
+
+
+def test_user_quota_override_blocks_after_effective_limit(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=5)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    client.patch("/api/v1/admin/users/test_user/quota", headers=admin_headers(), json={"daily_reply_quota": 1})
+    first = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one"})
+    second = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "two"})
+
+    assert first.status_code == 200
+    assert first.get_json()["limits"]["daily_reply_quota"] == 1
+    assert second.status_code == 429
+    assert len(captured) == 1
+
+
+def test_admin_site_quota_reports_used_and_remaining(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        admin_token="admin-secret",
+        web_site_daily_quota=3,
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_quality"})
+
+    stats = client.get("/api/v1/admin/stats", headers=admin_headers()).get_json()["stats"]
+
+    assert stats["site_quota"]["daily_quota"] == 3
+    assert stats["site_quota"]["daily_used"] == 2
+    assert stats["site_quota"]["daily_remaining"] == 1
 
 
 def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) -> None:

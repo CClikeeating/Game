@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import uuid
@@ -36,6 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_images_per_reply": 3,
         "min_images_per_reply": 1,
         "max_image_mb": 8,
+        "web_site_daily_quota": 500,
     },
     "runtime": {
         "default_mode": MODE_BAILIAN_RAG_FAST,
@@ -89,7 +91,8 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
         else:
             return fail("login_code_required", "请先完成微信登录。", 401)
-        token = store.create_session(user["user_id"], int(config.get("session_days", 30)))
+        ip_info = client_ip_info()
+        token = store.create_session(user["user_id"], int(config.get("session_days", 30)), ip_info["hash"], ip_info["display"])
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
     @app.post("/api/v1/auth/web-login")
@@ -102,7 +105,8 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return fail("web_access_denied", "内测访问码不正确。", 401)
         user_id = "web_" + uuid.uuid4().hex[:24]
         user = store.ensure_user(user_id, "", "网页内测用户")
-        token = store.create_session(user["user_id"], int(config.get("session_days", 30)))
+        ip_info = client_ip_info()
+        token = store.create_session(user["user_id"], int(config.get("session_days", 30)), ip_info["hash"], ip_info["display"])
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
     @app.get("/api/v1/me")
@@ -261,7 +265,55 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         auth_error = require_admin(config)
         if auth_error:
             return auth_error
-        return ok({"stats": store.admin_stats()})
+        stats = store.admin_stats()
+        stats["site_quota"] = site_quota_payload(store, config)
+        return ok({"stats": stats})
+
+    @app.get("/api/v1/admin/users")
+    def admin_users():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 100, 1, 1000)
+        return ok({"users": [public_admin_user(item, config) for item in store.list_admin_users(limit)]})
+
+    @app.patch("/api/v1/admin/users/<user_id>/quota")
+    def admin_user_quota_save(user_id: str):
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        disabled = parse_bool(payload.get("disabled"), False)
+        quota_value = payload.get("daily_reply_quota")
+        quota = None if quota_value is None or str(quota_value).strip() == "" else bounded_int(quota_value, int(config.get("daily_reply_quota", 20)), 0, 100000)
+        override = store.set_user_quota_override(user_id, quota, disabled)
+        return ok({"quota": public_user_quota_override(override, config)})
+
+    @app.delete("/api/v1/admin/users/<user_id>/quota")
+    def admin_user_quota_clear(user_id: str):
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        store.clear_user_quota_override(user_id)
+        return ok({"quota": {"user_id": user_id, "daily_reply_quota": None, "disabled": False, "effective_daily_reply_quota": int(config.get("daily_reply_quota", 20))}})
+
+    @app.get("/api/v1/admin/ip-usage")
+    def admin_ip_usage():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 100, 1, 1000)
+        return ok({"ip_usage": [public_ip_usage(item) for item in store.list_ip_usage(limit)]})
+
+    @app.get("/api/v1/admin/reply-runs/<run_id>")
+    def admin_reply_run_detail(run_id: str):
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        item = store.get_reply_run_for_admin(run_id)
+        if not item:
+            return fail("reply_run_not_found", "回复记录不存在。", 404)
+        return ok({"reply_run": public_admin_reply_run(item, config)})
 
     @app.get("/api/v1/admin/feedback")
     def admin_feedback():
@@ -388,7 +440,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "web_access_codes": web_access_codes,
         "web_access_code_hashes": web_access_code_hashes,
         "web_ip_daily_quota": int(os.environ.get("BAIOU_WEB_IP_DAILY_QUOTA") or limits.get("web_ip_daily_quota", 20)),
-        "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 300)),
+        "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 500)),
         "mode_unit_costs": configured_int_map(
             os.environ.get("BAIOU_MODE_UNIT_COSTS") or limits.get("mode_unit_costs"),
             {MODE_BAILIAN_RAG_FAST: 1, MODE_BAILIAN_RAG_QUALITY: 2},
@@ -477,9 +529,25 @@ def hmac_compare(left: str, right: str) -> bool:
 
 
 def client_ip_key() -> str:
+    return client_ip_info()["hash"]
+
+
+def client_ip_info() -> dict[str, str]:
     forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     ip = forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or "unknown"
-    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24]
+    return {"hash": hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24], "display": mask_ip(ip)}
+
+
+def mask_ip(value: str) -> str:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return "unknown"
+    if ip.version == 4:
+        parts = value.split(".")
+        return ".".join([*parts[:3], "*"]) if len(parts) == 4 else "unknown"
+    groups = ip.exploded.split(":")
+    return ":".join(groups[:4] + ["*", "*", "*", "*"])
 
 
 def wechat_code_to_session(config: dict[str, Any], code: str) -> tuple[dict[str, Any], str]:
@@ -530,7 +598,7 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
         "limits": {
             "daily_reply_quota": config.get("daily_reply_quota", 20),
             "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
-            "web_site_daily_quota": config.get("web_site_daily_quota", 300),
+            "web_site_daily_quota": config.get("web_site_daily_quota", 500),
             "mode_unit_costs": config.get("mode_unit_costs", {}),
             "max_conversations_per_user": config.get("max_conversations_per_user", 5),
             "history_turns_for_reply": config.get("history_turns_for_reply", 6),
@@ -567,6 +635,63 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def site_quota_payload(store: ProductStore, config: dict[str, Any]) -> dict[str, Any]:
+    quota = int(config.get("web_site_daily_quota", 0))
+    used = store.quota_units_today("site", "global") if quota else 0
+    return {"daily_quota": quota, "daily_used": used, "daily_remaining": max(0, quota - used) if quota else None}
+
+
+def public_admin_user(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    quota = int(config.get("daily_reply_quota", 20))
+    override = item.get("quota_override")
+    disabled = bool(item.get("disabled"))
+    effective_quota = 0 if disabled else int(override) if override is not None else quota
+    today_usage = int(item.get("today_usage", 0) or 0)
+    return {
+        "user_id": item.get("user_id", ""),
+        "nickname": item.get("nickname", ""),
+        "has_openid": bool(item.get("has_openid")),
+        "plan": item.get("plan", "trial"),
+        "created_at": item.get("created_at", ""),
+        "updated_at": item.get("updated_at", ""),
+        "last_activity_at": item.get("last_activity_at") or item.get("updated_at", ""),
+        "today_usage": today_usage,
+        "total_usage": int(item.get("total_usage", 0) or 0),
+        "quota_override": override,
+        "disabled": disabled,
+        "effective_daily_reply_quota": effective_quota,
+        "remaining_today": max(0, effective_quota - today_usage),
+        "last_ip_hash": item.get("last_ip_hash", ""),
+        "last_ip_display": item.get("last_ip_display", ""),
+        "last_login_at": item.get("last_login_at", ""),
+        "last_session_at": item.get("last_session_at", ""),
+    }
+
+
+def public_user_quota_override(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    disabled = bool(item.get("disabled"))
+    quota = item.get("daily_reply_quota")
+    effective_quota = 0 if disabled else int(quota) if quota is not None else int(config.get("daily_reply_quota", 20))
+    return {
+        "user_id": item.get("user_id", ""),
+        "daily_reply_quota": quota,
+        "disabled": disabled,
+        "effective_daily_reply_quota": effective_quota,
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
+def public_ip_usage(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ip_hash": item.get("ip_hash", ""),
+        "ip_display": item.get("ip_display") or "unknown",
+        "today_units": int(item.get("units", 0) or 0),
+        "recent_request_at": item.get("last_request_at", ""),
+        "recent_login_at": item.get("last_login_at", ""),
+        "user_count": int(item.get("user_count", 0) or 0),
+    }
+
+
 def save_admin_config(config: dict[str, Any], payload: dict[str, Any]) -> str:
     cleaned = clean_admin_config_payload(payload, config)
     path = resolve_path(config.get("admin_config_path") or "outputs/baiou/product/admin_config.json")
@@ -591,7 +716,7 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
         "limits": {
             "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 20)), 1, 10000),
             "web_ip_daily_quota": bounded_int(limits.get("web_ip_daily_quota"), int(config.get("web_ip_daily_quota", 20)), 0, 10000),
-            "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 300)), 0, 100000),
+            "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 500)), 0, 100000),
             "mode_unit_costs": {
                 MODE_BAILIAN_RAG_FAST: bounded_int(
                     (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
@@ -747,13 +872,14 @@ def unique_path(path: Path) -> Path:
 
 def usage_payload(store: ProductStore, config: dict[str, Any], user_id: str) -> dict[str, Any]:
     used = store.usage_today(user_id)
-    quota = int(config["daily_reply_quota"])
+    quota = effective_daily_reply_quota(store, config, user_id)
     ip_quota = int(config.get("web_ip_daily_quota", 0))
     site_quota = int(config.get("web_site_daily_quota", 0))
     ip_used = store.quota_units_today("ip", client_ip_key()) if ip_quota else 0
     site_used = store.quota_units_today("site", "global") if site_quota else 0
     return {
         **public_limits(config),
+        "daily_reply_quota": quota,
         "daily_reply_used": used,
         "daily_reply_remaining": max(0, quota - used),
         "web_ip_daily_used": ip_used,
@@ -782,10 +908,20 @@ def mode_unit_cost(config: dict[str, Any], mode: str) -> int:
     return max(1, int(costs.get(mode, 1)))
 
 
+def effective_daily_reply_quota(store: ProductStore, config: dict[str, Any], user_id: str) -> int:
+    override = store.get_user_quota_override(user_id)
+    if override:
+        if int(override.get("disabled", 0) or 0):
+            return 0
+        if override.get("daily_reply_quota") is not None:
+            return max(0, int(override.get("daily_reply_quota", 0)))
+    return max(0, int(config.get("daily_reply_quota", 0)))
+
+
 def reply_quota_error(store: ProductStore, config: dict[str, Any], user_id: str, unit_cost: int):
     used = store.usage_today(user_id)
-    user_quota = int(config.get("daily_reply_quota", 0))
-    if user_quota and used + unit_cost > user_quota:
+    user_quota = effective_daily_reply_quota(store, config, user_id)
+    if used + unit_cost > user_quota:
         return fail("daily_quota_exhausted", "今日回复次数已用完。", 429, {"remaining_quota": max(0, user_quota - used)})
     ip_quota = int(config.get("web_ip_daily_quota", 0))
     if ip_quota:
@@ -836,13 +972,22 @@ def public_reply_run(item: dict[str, Any], config: dict[str, Any]) -> dict[str, 
             "risk_warning": answer.get("risk_warning", ""),
             "next_step": answer.get("next_step", ""),
             "labels": answer.get("labels", {}),
-            "reference_segments": answer.get("reference_segments", []),
         },
-        "image_understanding": item.get("image_understanding", ""),
-        "reference_segments": compact_references(item.get("reference_segments", [])),
         "created_at": item.get("created_at", ""),
         "updated_at": item.get("updated_at", ""),
     }
+
+
+def public_admin_reply_run(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    output = public_reply_run(item, config)
+    output["user_id"] = item.get("user_id", "")
+    output["question"] = item.get("question", "")
+    output["user_context"] = item.get("user_context", "")
+    output["runtime_context"] = item.get("runtime_context", "")
+    output["image_count"] = item.get("image_count", 0)
+    output["image_understanding"] = item.get("image_understanding", "")
+    output["reference_segments"] = compact_references(item.get("reference_segments", []))
+    return output
 
 
 def compact_references(items: Any) -> list[dict[str, Any]]:
@@ -982,6 +1127,10 @@ def admin_page_html() -> str:
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; border-bottom: 1px solid #edf1f5; padding: 9px 6px; vertical-align: top; }
     th { color: var(--muted); font-weight: 800; }
+    .mini-input { width: 86px; padding: 7px 8px; }
+    .mini-check { width: auto; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .row-actions button { min-height: 34px; padding: 7px 10px; font-size: 12px; }
     @media (max-width: 860px) {
       header, .grid { display: block; }
       header .actions { margin-top: 14px; }
@@ -1085,6 +1234,20 @@ def admin_page_html() -> str:
       </div>
     </section>
     <section class="panel feedback">
+      <h2>用户与额度</h2>
+      <table>
+        <thead><tr><th>用户</th><th>登录/IP</th><th>使用量</th><th>额度</th><th>操作</th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </section>
+    <section class="panel feedback">
+      <h2>IP 用量</h2>
+      <table>
+        <thead><tr><th>IP</th><th>今日消耗</th><th>最近请求</th><th>关联用户</th></tr></thead>
+        <tbody id="ipUsage"></tbody>
+      </table>
+    </section>
+    <section class="panel feedback">
       <h2>最近反馈</h2>
       <table>
         <thead><tr><th>时间</th><th>评分</th><th>备注</th><th>问题</th><th>回复</th></tr></thead>
@@ -1114,10 +1277,14 @@ def admin_page_html() -> str:
     }
     function fillMetrics(stats) {
       const totals = stats.totals || {};
+      const site = stats.site_quota || {};
       const items = [
         ["今日生成", totals.today_reply_runs || 0],
         ["今日上传", totals.today_uploads || 0],
         ["今日反馈", totals.today_feedback || 0],
+        ["全站已用", site.daily_used || 0],
+        ["全站剩余", site.daily_remaining ?? "--"],
+        ["全站额度", site.daily_quota || 0],
         ["用户总数", totals.users || 0],
         ["回复总数", totals.reply_runs || 0],
         ["反馈总数", totals.feedback || 0],
@@ -1186,17 +1353,52 @@ def admin_page_html() -> str:
     function fillFeedback(rows) {
       document.querySelector("#feedback").innerHTML = (rows || []).map(row => `<tr><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.rating)}</td><td>${escapeHtml(row.notes)}</td><td>${escapeHtml(row.question)}</td><td>${escapeHtml(row.reply)}</td></tr>`).join("");
     }
+    function fillUsers(rows) {
+      document.querySelector("#users").innerHTML = (rows || []).map(row => `
+        <tr data-user-id="${escapeHtml(row.user_id)}">
+          <td><strong>${escapeHtml(row.user_id)}</strong><br><span class="tag">${escapeHtml(row.nickname || "无昵称")}</span> ${row.has_openid ? '<span class="tag ok">openid</span>' : '<span class="tag">无 openid</span>'}<br><span class="tag">创建 ${escapeHtml(row.created_at)}</span></td>
+          <td>${escapeHtml(row.last_ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.last_ip_hash || "")}</span><br><span class="tag">session ${escapeHtml(row.last_session_at || "-")}</span></td>
+          <td>今日 ${row.today_usage || 0} / ${row.effective_daily_reply_quota || 0}<br>总计 ${row.total_usage || 0}<br><span class="tag">活跃 ${escapeHtml(row.last_activity_at || "-")}</span></td>
+          <td><input class="mini-input quota-input" type="number" min="0" value="${row.quota_override ?? ""}" placeholder="默认"><br><label style="display:inline-flex;gap:6px;margin-top:6px"><input class="mini-check disabled-input" type="checkbox" ${row.disabled ? "checked" : ""}>禁用</label></td>
+          <td><div class="row-actions"><button type="button" data-action="save-quota">保存</button><button class="secondary" type="button" data-action="clear-quota">清空</button></div></td>
+        </tr>`).join("");
+      document.querySelectorAll("[data-action='save-quota']").forEach(button => button.addEventListener("click", () => saveUserQuota(button.closest("tr"))));
+      document.querySelectorAll("[data-action='clear-quota']").forEach(button => button.addEventListener("click", () => clearUserQuota(button.closest("tr"))));
+    }
+    function fillIpUsage(rows) {
+      document.querySelector("#ipUsage").innerHTML = (rows || []).map(row => `<tr><td>${escapeHtml(row.ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.ip_hash)}</span></td><td>${row.today_units || 0}</td><td>${escapeHtml(row.recent_request_at || row.recent_login_at || "-")}</td><td>${row.user_count || 0}</td></tr>`).join("");
+    }
+    async function saveUserQuota(row) {
+      const userId = row.dataset.userId;
+      const quota = row.querySelector(".quota-input").value;
+      const disabled = row.querySelector(".disabled-input").checked;
+      setStatus("保存用户额度中...");
+      await api(`/api/v1/admin/users/${encodeURIComponent(userId)}/quota`, { method: "PATCH", body: JSON.stringify({ daily_reply_quota: quota, disabled }) });
+      await loadAll();
+      setStatus("用户额度已保存");
+    }
+    async function clearUserQuota(row) {
+      const userId = row.dataset.userId;
+      setStatus("清空用户覆盖中...");
+      await api(`/api/v1/admin/users/${encodeURIComponent(userId)}/quota`, { method: "DELETE" });
+      await loadAll();
+      setStatus("用户额度已恢复默认");
+    }
     async function loadAll() {
       localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("加载中...");
-      const [cfg, stats, feedback] = await Promise.all([
+      const [cfg, stats, feedback, users, ipUsage] = await Promise.all([
         api("/api/v1/admin/config"),
         api("/api/v1/admin/stats"),
         api("/api/v1/admin/feedback?limit=20"),
+        api("/api/v1/admin/users?limit=100"),
+        api("/api/v1/admin/ip-usage?limit=100"),
       ]);
       fillConfig(cfg.config);
       fillMetrics(stats.stats);
       fillFeedback(feedback.feedback);
+      fillUsers(users.users);
+      fillIpUsage(ipUsage.ip_usage);
       setStatus("已加载");
     }
     form.addEventListener("submit", async event => {
