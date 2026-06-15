@@ -114,6 +114,30 @@ def test_login_requires_code_when_dev_login_is_disabled(monkeypatch, tmp_path: P
     assert response.get_json()["error"]["code"] == "login_code_required"
 
 
+def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, web_access_required=True, web_access_codes=["test-code"])
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    html = client.get("/app").get_data(as_text=True)
+    denied = client.post("/api/v1/auth/web-login", json={"access_code": "wrong"})
+    dev_login = client.post("/api/v1/auth/login", json={})
+    login = client.post("/api/v1/auth/web-login", json={"access_code": "test-code"})
+    token = login.get_json()["token"]
+    me = client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    forged = client.get("/api/v1/me", headers={"Authorization": "Bearer fake_user"})
+    anonymous = client.get("/api/v1/me")
+
+    assert "Baiou Alpha" in html
+    assert "test-code" not in html
+    assert denied.status_code == 401
+    assert dev_login.status_code == 401
+    assert login.status_code == 200
+    assert token
+    assert me.status_code == 200
+    assert forged.status_code == 401
+    assert anonymous.status_code == 401
+
+
 def test_conversation_limit_is_enforced_on_server(monkeypatch, tmp_path: Path) -> None:
     client, _captured = client_with_runtime(monkeypatch, tmp_path)
     login_and_default_conversation(client)
@@ -160,6 +184,44 @@ def test_daily_reply_quota_blocks_generation(monkeypatch, tmp_path: Path) -> Non
     assert second.status_code == 429
     assert second.get_json()["error"]["code"] == "daily_quota_exhausted"
     assert len(captured) == 1
+
+
+def test_web_ip_quota_uses_mode_unit_cost_and_dry_run_is_free(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        web_access_required=True,
+        web_access_codes=["test-code"],
+        web_ip_daily_quota=3,
+        web_site_daily_quota=10,
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+    )
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    login = client.post("/api/v1/auth/web-login", json={"access_code": "test-code"}).get_json()
+    headers = {"Authorization": f"Bearer {login['token']}", "X-Forwarded-For": "203.0.113.8"}
+    conv = client.get("/api/v1/conversations", headers=headers).get_json()["conversations"][0]["conversation_id"]
+
+    dry = client.post(
+        "/api/v1/replies",
+        headers=headers,
+        json={"conversation_id": conv, "question": "dry", "mode": "bailian_rag_quality", "dry_run": True},
+    )
+    first = client.post(
+        "/api/v1/replies",
+        headers=headers,
+        json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_quality"},
+    )
+    second = client.post(
+        "/api/v1/replies",
+        headers=headers,
+        json={"conversation_id": conv, "question": "two", "mode": "bailian_rag_quality"},
+    )
+
+    assert dry.status_code == 200
+    assert first.status_code == 200
+    assert first.get_json()["limits"]["web_ip_daily_remaining"] == 1
+    assert second.status_code == 429
+    assert second.get_json()["error"]["code"] == "ip_daily_quota_exhausted"
+    assert len(captured) == 2
 
 
 def test_upload_limits_and_staged_upload_ids(monkeypatch, tmp_path: Path) -> None:

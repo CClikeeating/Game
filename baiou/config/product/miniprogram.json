@@ -6,6 +6,12 @@
     "max_conversations_per_user": 5,
     "history_turns_for_reply": 6,
     "daily_reply_quota": 20,
+    "web_ip_daily_quota": 20,
+    "web_site_daily_quota": 300,
+    "mode_unit_costs": {
+      "bailian_rag_fast": 1,
+      "bailian_rag_quality": 2
+    },
     "max_images_per_reply": 3,
     "min_images_per_reply": 1,
     "max_image_mb": 8
@@ -19,6 +25,7 @@
   },
   "auth": {"default_user_id": "dev_user", "dev_login_enabled": true, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
   "admin": {"token": ""},
+  "web_alpha": {"access_required": false, "access_codes": [], "access_code_hashes": []},
   "retention": {"upload_days": 30, "run_days": 30},
   "announcements": [
     {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放回复模块，聊天窗口、反馈和额度已经接入。", "status": "active"}

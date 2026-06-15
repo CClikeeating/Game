@@ -97,6 +97,15 @@ class ProductStore:
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS quota_usage (
+                    scope TEXT NOT NULL,
+                    quota_key TEXT NOT NULL,
+                    usage_date TEXT NOT NULL,
+                    units INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(scope, quota_key, usage_date)
+                );
+
                 CREATE TABLE IF NOT EXISTS announcements (
                     announcement_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
@@ -346,21 +355,48 @@ class ProductStore:
             ).fetchone()
         return int(row["reply_count"] if row else 0)
 
-    def increment_usage(self, user_id: str) -> int:
+    def increment_usage(self, user_id: str, units: int = 1) -> int:
         today = date.today().isoformat()
         stamp = now_iso()
+        amount = max(0, int(units))
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO daily_usage(user_id, usage_date, reply_count, updated_at)
-                VALUES (?, ?, 1, ?)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(user_id, usage_date) DO UPDATE SET
-                    reply_count = daily_usage.reply_count + 1,
+                    reply_count = daily_usage.reply_count + excluded.reply_count,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, today, stamp),
+                (user_id, today, amount, stamp),
             )
         return self.usage_today(user_id)
+
+    def quota_units_today(self, scope: str, quota_key: str) -> int:
+        today = date.today().isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT units FROM quota_usage WHERE scope = ? AND quota_key = ? AND usage_date = ?",
+                (scope, quota_key, today),
+            ).fetchone()
+        return int(row["units"] if row else 0)
+
+    def increment_quota_units(self, scope: str, quota_key: str, units: int = 1) -> int:
+        today = date.today().isoformat()
+        stamp = now_iso()
+        amount = max(0, int(units))
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO quota_usage(scope, quota_key, usage_date, units, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scope, quota_key, usage_date) DO UPDATE SET
+                    units = quota_usage.units + excluded.units,
+                    updated_at = excluded.updated_at
+                """,
+                (scope, quota_key, today, amount, stamp),
+            )
+        return self.quota_units_today(scope, quota_key)
 
     def add_feedback(self, user_id: str, conversation_id: str, run_id: str, rating: str, notes: str = "") -> dict[str, Any] | None:
         if not self.get_conversation(user_id, conversation_id) or not self.get_reply_run(user_id, run_id):

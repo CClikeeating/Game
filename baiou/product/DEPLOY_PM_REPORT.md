@@ -45,6 +45,14 @@ http://101.133.161.248/admin
 
 注意：管理后台需要 token。token 只应保存在服务器环境变量或安全密码管理工具里，不应写进 README、代码、截图或聊天记录。
 
+当前网页 alpha 入口：
+
+```text
+http://101.133.161.248/app
+```
+
+网页 alpha 使用统一内测访问码进入。访问码只应配置在服务器环境变量中，不写入前端源码、仓库配置或公开文档。
+
 ### 2. 百炼模式与知识库策略
 
 已确认产品端支持：
@@ -336,6 +344,50 @@ python -m baiou.product.api.cleanup --apply
 - 不在代码或文档里写死服务器密码、后台 token、模型密钥。
 - 不把轻量 Flask 服务重构成大型后端框架。
 - 不做复杂实时监控大屏，只做了内测够用的统计页。
+
+## 网页 alpha 部署补充
+
+短期内测可以继续使用 IP + HTTP：
+
+```text
+http://101.133.161.248/app
+```
+
+如果域名 `baioulove2.online` 已解析到服务器公网 IP，可先通过 HTTP 小范围测试：
+
+```text
+http://baioulove2.online/app
+```
+
+正式面向更多用户前建议补 HTTPS，再切到：
+
+```text
+https://baioulove2.online/app
+```
+
+建议服务器环境变量：
+
+```text
+BAIOU_WEB_ACCESS_CODES=内测访问码
+BAIOU_WEB_IP_DAILY_QUOTA=20
+BAIOU_WEB_SITE_DAILY_QUOTA=300
+BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_quality=2
+BAIOU_MINIPROGRAM_DEV_LOGIN=false
+BAIOU_MINIPROGRAM_DEBUG=false
+```
+
+安全底线：
+
+- 公网只暴露 Nginx 的 80/443。
+- Gunicorn/Flask 继续监听 `127.0.0.1:7871`，不要让 7871 直接公网可访问。
+- `/admin` 继续使用 Authorization token，不把 token 放 URL。
+- 内测访问码、admin token、百炼 key、微信 secret 都只放服务器环境变量。
+- 每天执行一次过期文件清理：
+
+```bash
+cd /opt/baiou/current
+python -m baiou.product.api.cleanup --apply
+```
 
 ## 八、当前风险
 

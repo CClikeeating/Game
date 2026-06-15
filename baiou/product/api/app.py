@@ -15,6 +15,7 @@ from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from baiou.common.io import PROJECT_ROOT, load_data, resolve_path
+from baiou.product.api.web_alpha import web_alpha_page_html
 from baiou.product.runtime.reply_engine import MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY, normalize_mode, run_reply
 from baiou.product.storage import ProductStore
 
@@ -42,6 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
     "admin": {"token": ""},
+    "web_alpha": {"access_required": False, "access_codes": [], "access_code_hashes": []},
     "retention": {"upload_days": 30, "run_days": 30},
     "announcements": [],
     "billing": {"products": []},
@@ -65,6 +67,10 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             }
         )
 
+    @app.get("/app")
+    def web_alpha_page():
+        return Response(web_alpha_page_html(config), mimetype="text/html; charset=utf-8")
+
     @app.post("/api/v1/auth/login")
     def login():
         payload = request.get_json(silent=True) or {}
@@ -78,11 +84,24 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
                 return fail("wechat_openid_missing", "微信登录失败，请稍后重试。", 401)
             user_id = wechat_user_id(openid)
             user = store.ensure_user(user_id, openid, str(payload.get("nickname", "")))
-        elif config["dev_login_enabled"]:
+        elif config["dev_login_enabled"] and not config.get("web_access_required"):
             user_id = requested_user_id(config, payload)
             user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
         else:
             return fail("login_code_required", "请先完成微信登录。", 401)
+        token = store.create_session(user["user_id"], int(config.get("session_days", 30)))
+        return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
+
+    @app.post("/api/v1/auth/web-login")
+    def web_login():
+        payload = request.get_json(silent=True) or {}
+        access_code = str(payload.get("access_code", "")).strip()
+        if not config.get("web_access_required"):
+            return fail("web_access_not_configured", "内测访问码未配置。", 503)
+        if not access_code_allowed(config, access_code):
+            return fail("web_access_denied", "内测访问码不正确。", 401)
+        user_id = "web_" + uuid.uuid4().hex[:24]
+        user = store.ensure_user(user_id, "", "网页内测用户")
         token = store.create_session(user["user_id"], int(config.get("session_days", 30)))
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
@@ -155,10 +174,12 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if not question:
             return fail("question_required", "请输入要回复的内容。", 400)
         dry_run = parse_bool(form.get("dry_run"))
-        used = store.usage_today(user_id)
-        if not dry_run and used >= int(config["daily_reply_quota"]):
-            return fail("daily_quota_exhausted", "今日回复次数已用完。", 429, {"remaining_quota": 0})
         mode = normalize_api_mode(str(form.get("mode", "") or config["default_mode"]), config)
+        unit_cost = mode_unit_cost(config, mode)
+        if not dry_run:
+            quota_error = reply_quota_error(store, config, user_id, unit_cost)
+            if quota_error:
+                return quota_error
         files = request.files.getlist("images") if request.files else []
         validation_error = validate_images(files, config)
         if validation_error:
@@ -191,7 +212,8 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             saved = store.update_reply_run(user_id, run_record["run_id"], result) or run_record
             store.mark_uploads_consumed(user_id, upload_ids)
             if not dry_run:
-                used = store.increment_usage(user_id)
+                store.increment_usage(user_id, unit_cost)
+                increment_reply_quota_units(store, config, unit_cost)
         except Exception as exc:  # noqa: BLE001
             saved = store.fail_reply_run(user_id, run_record["run_id"], f"{exc.__class__.__name__}: {exc}") or run_record
         return ok({"reply_run": public_reply_run(saved, config), "limits": usage_payload(store, config, user_id)})
@@ -338,9 +360,16 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
     runtime = raw.get("runtime", {})
     auth = raw.get("auth", {})
     admin = raw.get("admin", {}) if isinstance(raw.get("admin"), dict) else {}
+    web_alpha = raw.get("web_alpha", {}) if isinstance(raw.get("web_alpha"), dict) else {}
     retention = raw.get("retention", {}) if isinstance(raw.get("retention"), dict) else {}
     rag = raw.get("rag", {}) if isinstance(raw.get("rag"), dict) else {}
     max_image_mb = int(os.environ.get("BAIOU_MINIPROGRAM_MAX_IMAGE_MB") or limits.get("max_image_mb") or upload.get("max_image_mb", 8))
+    web_access_codes = configured_list(os.environ.get("BAIOU_WEB_ACCESS_CODES") or web_alpha.get("access_codes", []))
+    web_access_code_hashes = configured_list(os.environ.get("BAIOU_WEB_ACCESS_CODE_HASHES") or web_alpha.get("access_code_hashes", []))
+    web_access_required = parse_bool(
+        os.environ.get("BAIOU_WEB_ACCESS_REQUIRED"),
+        bool(web_alpha.get("access_required", bool(web_access_codes or web_access_code_hashes))),
+    )
     return {
         "host": os.environ.get("BAIOU_MINIPROGRAM_HOST") or server.get("host", "127.0.0.1"),
         "port": int(os.environ.get("BAIOU_MINIPROGRAM_PORT") or server.get("port", 7871)),
@@ -355,6 +384,15 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "min_images_per_reply": int(limits.get("min_images_per_reply", 1)),
         "max_image_mb": max_image_mb,
         "max_image_bytes": max_image_mb * 1024 * 1024,
+        "web_access_required": web_access_required,
+        "web_access_codes": web_access_codes,
+        "web_access_code_hashes": web_access_code_hashes,
+        "web_ip_daily_quota": int(os.environ.get("BAIOU_WEB_IP_DAILY_QUOTA") or limits.get("web_ip_daily_quota", 20)),
+        "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 300)),
+        "mode_unit_costs": configured_int_map(
+            os.environ.get("BAIOU_MODE_UNIT_COSTS") or limits.get("mode_unit_costs"),
+            {MODE_BAILIAN_RAG_FAST: 1, MODE_BAILIAN_RAG_QUALITY: 2},
+        ),
         "default_mode": os.environ.get("BAIOU_REPLY_MODE") or runtime.get("default_mode", MODE_BAILIAN_RAG_FAST),
         "modes": runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"]),
         "default_user_id": os.environ.get("BAIOU_MINIPROGRAM_DEFAULT_USER_ID") or auth.get("default_user_id", "dev_user"),
@@ -409,12 +447,39 @@ def current_user_id(config: dict[str, Any], store: ProductStore) -> str:
             user_id = store.user_id_for_session(token)
             if user_id:
                 return user_id
+            if config.get("web_access_required"):
+                return ""
             if config.get("dev_login_enabled"):
                 return token
     header = request.headers.get("X-Baiou-User-Id", "").strip()
-    if header and config.get("dev_login_enabled"):
+    if header and config.get("dev_login_enabled") and not config.get("web_access_required"):
         return header
-    return str(config.get("default_user_id", "dev_user")) if config.get("dev_login_enabled") else ""
+    if config.get("dev_login_enabled") and not config.get("web_access_required"):
+        return str(config.get("default_user_id", "dev_user"))
+    return ""
+
+
+def access_code_allowed(config: dict[str, Any], access_code: str) -> bool:
+    if not access_code:
+        return False
+    for expected in config.get("web_access_codes", []):
+        if hmac_compare(access_code, str(expected)):
+            return True
+    provided_hash = hashlib.sha256(access_code.encode("utf-8")).hexdigest()
+    for expected_hash in config.get("web_access_code_hashes", []):
+        if hmac_compare(provided_hash, str(expected_hash).lower()):
+            return True
+    return False
+
+
+def hmac_compare(left: str, right: str) -> bool:
+    return hashlib.sha256(left.encode("utf-8")).digest() == hashlib.sha256(right.encode("utf-8")).digest()
+
+
+def client_ip_key() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    ip = forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or "unknown"
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24]
 
 
 def wechat_code_to_session(config: dict[str, Any], code: str) -> tuple[dict[str, Any], str]:
@@ -464,6 +529,9 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
         },
         "limits": {
             "daily_reply_quota": config.get("daily_reply_quota", 20),
+            "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
+            "web_site_daily_quota": config.get("web_site_daily_quota", 300),
+            "mode_unit_costs": config.get("mode_unit_costs", {}),
             "max_conversations_per_user": config.get("max_conversations_per_user", 5),
             "history_turns_for_reply": config.get("history_turns_for_reply", 6),
             "max_images_per_reply": config.get("max_images_per_reply", 3),
@@ -485,6 +553,7 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
             "wechat_appid": bool(config.get("wechat_appid")),
             "wechat_secret": bool(config.get("wechat_secret")),
             "admin_token": bool(config.get("admin_token")),
+            "web_access_code": bool(config.get("web_access_codes") or config.get("web_access_code_hashes")),
         },
         "paths": {
             "admin_config_path": config.get("admin_config_path", ""),
@@ -521,6 +590,22 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
         },
         "limits": {
             "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 20)), 1, 10000),
+            "web_ip_daily_quota": bounded_int(limits.get("web_ip_daily_quota"), int(config.get("web_ip_daily_quota", 20)), 0, 10000),
+            "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 300)), 0, 100000),
+            "mode_unit_costs": {
+                MODE_BAILIAN_RAG_FAST: bounded_int(
+                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
+                    mode_unit_cost(config, MODE_BAILIAN_RAG_FAST),
+                    1,
+                    100,
+                ),
+                MODE_BAILIAN_RAG_QUALITY: bounded_int(
+                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_QUALITY) if isinstance(limits.get("mode_unit_costs"), dict) else None,
+                    mode_unit_cost(config, MODE_BAILIAN_RAG_QUALITY),
+                    1,
+                    100,
+                ),
+            },
             "max_conversations_per_user": bounded_int(limits.get("max_conversations_per_user"), int(config.get("max_conversations_per_user", 5)), 1, 100),
             "history_turns_for_reply": bounded_int(limits.get("history_turns_for_reply"), int(config.get("history_turns_for_reply", 6)), 0, 50),
             "max_images_per_reply": bounded_int(limits.get("max_images_per_reply"), int(config.get("max_images_per_reply", 3)), 1, 10),
@@ -557,9 +642,13 @@ def apply_admin_config(config: dict[str, Any], cleaned: dict[str, Any]) -> None:
         "max_images_per_reply",
         "min_images_per_reply",
         "max_image_mb",
+        "web_ip_daily_quota",
+        "web_site_daily_quota",
     ]:
         if key in limits:
             config[key] = limits[key]
+    if isinstance(limits.get("mode_unit_costs"), dict):
+        config["mode_unit_costs"] = configured_int_map(limits["mode_unit_costs"], config.get("mode_unit_costs", {}))
     config["max_image_bytes"] = int(config.get("max_image_mb", 8)) * 1024 * 1024
     config["upload_retention_days"] = retention.get("upload_days", config.get("upload_retention_days", 30))
     config["run_retention_days"] = retention.get("run_days", config.get("run_retention_days", 30))
@@ -659,7 +748,19 @@ def unique_path(path: Path) -> Path:
 def usage_payload(store: ProductStore, config: dict[str, Any], user_id: str) -> dict[str, Any]:
     used = store.usage_today(user_id)
     quota = int(config["daily_reply_quota"])
-    return {**public_limits(config), "daily_reply_used": used, "daily_reply_remaining": max(0, quota - used)}
+    ip_quota = int(config.get("web_ip_daily_quota", 0))
+    site_quota = int(config.get("web_site_daily_quota", 0))
+    ip_used = store.quota_units_today("ip", client_ip_key()) if ip_quota else 0
+    site_used = store.quota_units_today("site", "global") if site_quota else 0
+    return {
+        **public_limits(config),
+        "daily_reply_used": used,
+        "daily_reply_remaining": max(0, quota - used),
+        "web_ip_daily_used": ip_used,
+        "web_ip_daily_remaining": max(0, ip_quota - ip_used) if ip_quota else None,
+        "web_site_daily_used": site_used,
+        "web_site_daily_remaining": max(0, site_quota - site_used) if site_quota else None,
+    }
 
 
 def public_limits(config: dict[str, Any]) -> dict[str, Any]:
@@ -667,10 +768,43 @@ def public_limits(config: dict[str, Any]) -> dict[str, Any]:
         "max_conversations_per_user": config["max_conversations_per_user"],
         "history_turns_for_reply": config["history_turns_for_reply"],
         "daily_reply_quota": config["daily_reply_quota"],
+        "web_ip_daily_quota": config.get("web_ip_daily_quota", 0),
+        "web_site_daily_quota": config.get("web_site_daily_quota", 0),
+        "mode_unit_costs": config.get("mode_unit_costs", {}),
         "max_images_per_reply": config["max_images_per_reply"],
         "min_images_per_reply": config["min_images_per_reply"],
         "max_image_mb": config["max_image_mb"],
     }
+
+
+def mode_unit_cost(config: dict[str, Any], mode: str) -> int:
+    costs = config.get("mode_unit_costs", {}) if isinstance(config.get("mode_unit_costs"), dict) else {}
+    return max(1, int(costs.get(mode, 1)))
+
+
+def reply_quota_error(store: ProductStore, config: dict[str, Any], user_id: str, unit_cost: int):
+    used = store.usage_today(user_id)
+    user_quota = int(config.get("daily_reply_quota", 0))
+    if user_quota and used + unit_cost > user_quota:
+        return fail("daily_quota_exhausted", "今日回复次数已用完。", 429, {"remaining_quota": max(0, user_quota - used)})
+    ip_quota = int(config.get("web_ip_daily_quota", 0))
+    if ip_quota:
+        ip_used = store.quota_units_today("ip", client_ip_key())
+        if ip_used + unit_cost > ip_quota:
+            return fail("ip_daily_quota_exhausted", "当前网络今日内测额度已用完。", 429, {"remaining_quota": max(0, ip_quota - ip_used)})
+    site_quota = int(config.get("web_site_daily_quota", 0))
+    if site_quota:
+        site_used = store.quota_units_today("site", "global")
+        if site_used + unit_cost > site_quota:
+            return fail("site_daily_quota_exhausted", "今日全站内测额度已用完。", 429, {"remaining_quota": max(0, site_quota - site_used)})
+    return None
+
+
+def increment_reply_quota_units(store: ProductStore, config: dict[str, Any], unit_cost: int) -> None:
+    if int(config.get("web_ip_daily_quota", 0)):
+        store.increment_quota_units("ip", client_ip_key(), unit_cost)
+    if int(config.get("web_site_daily_quota", 0)):
+        store.increment_quota_units("site", "global", unit_cost)
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -896,6 +1030,18 @@ def admin_page_html() -> str:
             <label>每日额度
               <input name="daily_reply_quota" type="number" min="1">
             </label>
+            <label>网页 IP 每日额度
+              <input name="web_ip_daily_quota" type="number" min="0">
+            </label>
+            <label>全站每日额度
+              <input name="web_site_daily_quota" type="number" min="0">
+            </label>
+            <label>快速模式扣费
+              <input name="fast_unit_cost" type="number" min="1">
+            </label>
+            <label>质量模式扣费
+              <input name="quality_unit_cost" type="number" min="1">
+            </label>
             <label>最大会话数
               <input name="max_conversations_per_user" type="number" min="1">
             </label>
@@ -979,7 +1125,7 @@ def admin_page_html() -> str:
       document.querySelector("#metrics").innerHTML = items.map(([k, v]) => `<div class="metric"><b>${v}</b><span>${k}</span></div>`).join("");
     }
     function fillSecrets(secrets) {
-      const labels = { dashscope_api_key: "DashScope Key", deepseek_api_key: "DeepSeek Key", wechat_appid: "微信 AppID", wechat_secret: "微信 AppSecret", admin_token: "后台 Token" };
+      const labels = { dashscope_api_key: "DashScope Key", deepseek_api_key: "DeepSeek Key", wechat_appid: "微信 AppID", wechat_secret: "微信 AppSecret", admin_token: "后台 Token", web_access_code: "网页内测码" };
       document.querySelector("#secrets").innerHTML = Object.entries(labels).map(([key, label]) => {
         const ok = !!secrets[key];
         return `<div class="secret"><span>${label}</span><span class="tag ${ok ? "ok" : "warn"}">${ok ? "已配置" : "未配置"}</span></div>`;
@@ -1012,6 +1158,10 @@ def admin_page_html() -> str:
       form.vector_store_ids.value = (cfg.rag.vector_store_ids || []).join(",");
       form.rag_max_num_results.value = cfg.rag.max_num_results || 3;
       form.daily_reply_quota.value = cfg.limits.daily_reply_quota || 20;
+      form.web_ip_daily_quota.value = cfg.limits.web_ip_daily_quota || 0;
+      form.web_site_daily_quota.value = cfg.limits.web_site_daily_quota || 0;
+      form.fast_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_fast || 1;
+      form.quality_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_quality || 2;
       form.max_conversations_per_user.value = cfg.limits.max_conversations_per_user || 5;
       form.history_turns_for_reply.value = cfg.limits.history_turns_for_reply || 6;
       form.max_images_per_reply.value = cfg.limits.max_images_per_reply || 3;
@@ -1057,6 +1207,12 @@ def admin_page_html() -> str:
         rag: { vector_store_ids: form.vector_store_ids.value, max_num_results: form.rag_max_num_results.value },
         limits: {
           daily_reply_quota: form.daily_reply_quota.value,
+          web_ip_daily_quota: form.web_ip_daily_quota.value,
+          web_site_daily_quota: form.web_site_daily_quota.value,
+          mode_unit_costs: {
+            bailian_rag_fast: form.fast_unit_cost.value,
+            bailian_rag_quality: form.quality_unit_cost.value,
+          },
           max_conversations_per_user: form.max_conversations_per_user.value,
           history_turns_for_reply: form.history_turns_for_reply.value,
           max_images_per_reply: form.max_images_per_reply.value,
@@ -1098,6 +1254,28 @@ def configured_list(value: Any) -> list[str]:
     if not text:
         return []
     return [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
+
+
+def configured_int_map(value: Any, default: dict[str, int]) -> dict[str, int]:
+    if isinstance(value, dict):
+        items = value.items()
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return dict(default)
+        try:
+            loaded = json.loads(text)
+            items = loaded.items() if isinstance(loaded, dict) else []
+        except json.JSONDecodeError:
+            pairs = [item.split("=", 1) for item in text.replace(";", ",").split(",") if "=" in item]
+            items = [(key.strip(), raw.strip()) for key, raw in pairs]
+    output = dict(default)
+    for key, raw in items:
+        try:
+            output[str(key)] = max(1, int(raw))
+        except (TypeError, ValueError):
+            continue
+    return output
 
 
 def normalize_extension(value: Any) -> str:
