@@ -200,6 +200,7 @@ def run_bailian_rag_fast(
         write_json(output_dir / "summary.json", preview)
         return preview
 
+    workflow_attempt: dict[str, Any] = {}
     workflow_cfg, workflow_app_id = bailian_workflow_app_config(models, mode_name)
     if workflow_app_id:
         workflow_payload = build_bailian_workflow_payload(
@@ -226,12 +227,16 @@ def run_bailian_rag_fast(
             label_result,
             reply_result,
         )
-        write_json(output_dir / "summary.json", summary)
-        return summary
+        workflow_attempt = summary.get("reply_result", {})
+        if summary.get("status") == "workflow_success":
+            write_json(output_dir / "summary.json", summary)
+            return summary
 
     rag_cfg, error = bailian_rag_config(models)
     if error:
         summary = unavailable_bailian_summary(run_id, output_dir, question, context, image_paths, image_data, image_understanding, error, mode_name)
+        if workflow_attempt:
+            summary["workflow_attempt"] = workflow_attempt
         if quality_guidance:
             summary["quality_guidance"] = quality_guidance
         if label_result:
@@ -265,6 +270,8 @@ def run_bailian_rag_fast(
         "reply_result": compact_model_result(reply_result),
         "output_dir": str(output_dir),
     }
+    if workflow_attempt:
+        summary["workflow_attempt"] = workflow_attempt
     write_json(output_dir / "summary.json", summary)
     return summary
 
@@ -477,7 +484,13 @@ def quality_label_config(models: dict[str, Any]) -> dict[str, Any]:
 
 def bailian_workflow_app_config(models: dict[str, Any], mode: str) -> tuple[dict[str, Any], str]:
     root = models.get("bailian_workflow_apps", {})
-    if not isinstance(root, dict) or not root.get("enabled", False):
+    if not isinstance(root, dict):
+        return {}, ""
+    enabled = configured_bool(
+        os.environ.get("BAIOU_BAILIAN_WORKFLOW_APPS_ENABLED") or os.environ.get("BAIOU_BAILIAN_WORKFLOW_ENABLED"),
+        bool(root.get("enabled", False)),
+    )
+    if not enabled:
         return {}, ""
     apps = root.get("apps", {}) if isinstance(root.get("apps"), dict) else {}
     app_cfg = apps.get(mode, {}) if isinstance(apps.get(mode, {}), dict) else {}
@@ -487,6 +500,22 @@ def bailian_workflow_app_config(models: dict[str, Any], mode: str) -> tuple[dict
     cfg = json.loads(json.dumps(root))
     cfg.pop("apps", None)
     cfg.update(app_cfg)
+    cfg["enabled"] = enabled
+    for key, env_name in {
+        "base_url": "BAIOU_BAILIAN_WORKFLOW_BASE_URL",
+        "endpoint": "BAIOU_BAILIAN_WORKFLOW_ENDPOINT",
+        "endpoint_path": "BAIOU_BAILIAN_WORKFLOW_ENDPOINT_PATH",
+        "api_key_env": "BAIOU_BAILIAN_WORKFLOW_API_KEY_ENV",
+        "input_key": "BAIOU_BAILIAN_WORKFLOW_INPUT_KEY",
+        "prompt_key": "BAIOU_BAILIAN_WORKFLOW_PROMPT_KEY",
+        "parameters_key": "BAIOU_BAILIAN_WORKFLOW_PARAMETERS_KEY",
+    }.items():
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            cfg[key] = value
+    timeout = os.environ.get("BAIOU_BAILIAN_WORKFLOW_TIMEOUT_SECONDS", "").strip()
+    if timeout:
+        cfg["timeout_seconds"] = timeout
 
     app_id_env = str(cfg.get("app_id_env", "")).strip()
     app_id = os.environ.get(app_id_env, "").strip() if app_id_env else ""
@@ -511,6 +540,7 @@ def build_bailian_workflow_payload(
     input_key = str(config.get("input_key") or "input")
     parameters_key = str(config.get("parameters_key") or "parameters")
     input_payload = {
+        "schema_version": "baiou_reply_workflow_v1",
         prompt_key: input_text,
         "question": question,
         "context": context,
@@ -522,6 +552,7 @@ def build_bailian_workflow_payload(
     payload: dict[str, Any] = {
         input_key: input_payload,
         parameters_key: {
+            "schema_version": "baiou_reply_workflow_v1",
             "mode": mode,
             "user_id": str(user_id),
         },
@@ -556,6 +587,8 @@ def bailian_workflow_summary(
         reply_result["status"] = status
         if status.endswith("_invalid") and not reply_result.get("error"):
             reply_result["error"] = "workflow_answer_json_invalid"
+        elif not reply_result.get("error"):
+            reply_result["error"] = "workflow_answer_unusable"
         answer["debug"] = {**answer.get("debug", {}), "workflow_status": status, "workflow_error": reply_result.get("error", "")}
     summary = {
         "status": reply_result.get("status", ""),
@@ -588,6 +621,8 @@ def parse_bailian_workflow_result(reply_result: dict[str, Any]) -> tuple[dict[st
         return {}, [], "workflow_json_invalid"
     parsed = normalize_workflow_answer(parsed)
     references = normalize_workflow_references(parsed.get("reference_segments", []))
+    if not str(parsed.get("reply", "")).strip():
+        return parsed, references, "workflow_reply_missing"
     return parsed, references, "workflow_success"
 
 
@@ -682,6 +717,12 @@ def compact_workflow_result(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("raw_text"):
         compact["raw_text_preview"] = str(result.get("raw_text", ""))[:4000]
     return compact
+
+
+def configured_bool(value: Any, default: bool = False) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:
