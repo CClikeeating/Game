@@ -198,3 +198,166 @@ http://101.133.161.248
 - 关闭内测登录：`BAIOU_MINIPROGRAM_DEV_LOGIN=false`。
 - 改掉已经在对话中出现过的服务器 root 密码，改用 SSH key 登录。
 - 管理后台 token 仅在服务器环境变量中保存，不写入前端或公开文档。
+
+## 产品端云部署交接（2026-06-16）
+
+当前 `main` 已包含产品网页 alpha、后台管理和额度控制，最近一次已验证提交：
+
+```text
+e0c0919 Refine web upload UX and trusted proxy IP handling
+```
+
+本地全量测试已通过：
+
+```powershell
+$env:PYTEST_ADDOPTS='--basetemp=.pytest_tmp_polish_admin_main'
+python -m pytest -q
+# 64 passed
+```
+
+当前服务器内测入口：
+
+```text
+用户网页：http://101.133.161.248/app
+管理后台：http://101.133.161.248/admin
+健康检查：http://101.133.161.248/api/v1/health
+```
+
+当前服务器 release：
+
+```text
+/opt/baiou/releases/release_20260616_090640_polish_admin
+```
+
+### 已完成的产品端能力
+
+- `/app` 用户网页 alpha：
+  - 内测访问码登录。
+  - 手机端优先，同时适配桌面端。
+  - 上传聊天截图、输入问题、补充背景、选择快速/质量模式、生成推荐回复。
+  - 普通用户页面不展示“截图理解”和“参考片段”；这些只保留在后端/admin 调试数据里。
+  - 上传区显示已选择图片数量、文件名、大小，并做格式/大小/数量校验。
+  - 生成时显示等待阶段和等待秒数。
+  - 快速模式扣 1 次额度，质量模式扣 2 次额度。
+  - dry-run 不扣真实额度。
+
+- `/admin` 管理后台：
+  - 使用 `Authorization: Bearer <BAIOU_ADMIN_TOKEN>`，token 不放 URL。
+  - 查看全站统计、今日全站额度、已用、剩余。
+  - 查看用户列表、最近登录 IP 脱敏展示、IP hash、今日用量、总用量、最近活动时间。
+  - 查看 IP 今日用量。
+  - 支持单用户每日额度覆盖。
+  - 支持单用户禁用（额度 0）和清空覆盖额度。
+  - 支持动态配置全局每日额度、IP 每日额度、全站每日额度、模式扣费、RAG 知识库 ID 和召回数量。
+  - 支持反馈查看和 CSV 导出。
+
+- 服务端安全和成本控制：
+  - Gunicorn 绑定 `127.0.0.1:7871`，公网只通过 Nginx 80 端口访问。
+  - `BAIOU_MINIPROGRAM_DEBUG=false`。
+  - `BAIOU_MINIPROGRAM_DEV_LOGIN=false`。
+  - IP 限额、用户限额、全站额度三层同时生效。
+  - 后台 IP 记录只信任 `BAIOU_TRUSTED_PROXY_IPS` 中的代理地址，避免直接信任客户端伪造的 `X-Forwarded-For`。
+
+### 当前线上关键配置
+
+这些值在服务器环境变量中配置，不应写入代码、README、截图或聊天记录：
+
+```text
+DASHSCOPE_API_KEY
+DEEPSEEK_API_KEY
+BAIOU_ADMIN_TOKEN
+BAIOU_WEB_ACCESS_CODES 或 BAIOU_WEB_ACCESS_CODE_HASHES
+BAIOU_WECHAT_SECRET
+```
+
+当前建议公开配置项：
+
+```text
+BAIOU_OUTPUT_ROOT=/opt/baiou/shared/outputs
+BAIOU_ADMIN_CONFIG=/opt/baiou/shared/admin_config.json
+BAIOU_MINIPROGRAM_DB=/opt/baiou/shared/app.db
+BAIOU_MINIPROGRAM_UPLOAD_ROOT=/opt/baiou/shared/uploads
+BAIOU_MINIPROGRAM_HOST=127.0.0.1
+BAIOU_MINIPROGRAM_PORT=7871
+BAIOU_MINIPROGRAM_DEV_LOGIN=false
+BAIOU_MINIPROGRAM_DEBUG=false
+BAIOU_SESSION_DAYS=30
+BAIOU_REPLY_MODE=bailian_rag_fast
+BAIOU_VECTOR_STORE_IDS=n7s0ou2dpt
+BAIOU_RAG_MAX_NUM_RESULTS=3
+BAIOU_UPLOAD_RETENTION_DAYS=30
+BAIOU_RUN_RETENTION_DAYS=30
+BAIOU_WEB_IP_DAILY_QUOTA=20
+BAIOU_WEB_SITE_DAILY_QUOTA=500
+BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_quality=2
+BAIOU_TRUSTED_PROXY_IPS=127.0.0.1,::1
+```
+
+### 云部署必须保留的持久化数据
+
+如果迁移到云平台，不能只部署代码。下面这些路径必须放到持久化磁盘、数据库或对象存储中：
+
+```text
+/opt/baiou/shared/app.db
+/opt/baiou/shared/admin_config.json
+/opt/baiou/shared/uploads/
+/opt/baiou/shared/outputs/
+/opt/baiou/shared/logs/
+```
+
+其中 `app.db` 保存用户、会话、回复记录、反馈、每日额度、IP 用量、单用户额度覆盖和登录事件。丢失后不会影响代码启动，但会丢失运营数据和后台管理状态。
+
+### 云部署运行方式
+
+当前服务是 Flask + Gunicorn，不需要单独前端构建步骤。
+
+依赖安装：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+启动命令：
+
+```bash
+.venv/bin/gunicorn --workers 2 --threads 2 --timeout 240 --bind 127.0.0.1:7871 'baiou.product.api.app:create_app()'
+```
+
+云平台如果要求直接监听平台端口，可以把 bind 改成平台提供的 `$PORT`，但要确认：
+
+- 外层反代会覆盖或正确设置 `X-Real-IP` / `X-Forwarded-For`。
+- `BAIOU_TRUSTED_PROXY_IPS` 只配置可信代理地址。
+- 管理后台仍然必须带 `Authorization` header。
+
+### 部署后验证清单
+
+基础检查：
+
+```bash
+curl -fsS http://127.0.0.1:7871/api/v1/health
+```
+
+公网检查：
+
+```text
+打开 /app，确认能看到访问码页。
+输入内测码，确认能进入用户页。
+上传 1 张图，确认页面显示“已选择 1 张”。
+快速模式跑一次，确认返回 model_success。
+质量模式跑一次，确认等待状态可见，且额度扣 2。
+打开 /admin，输入 admin token。
+确认 stats、users、ip-usage、feedback 都能加载。
+确认全站每日额度为 500。
+```
+
+### 当前已知注意事项
+
+- 当前内测仍是 HTTP，不适合长期公开传播真实用户截图；正式开放前建议配置域名和 HTTPS。
+- 用户截图属于隐私数据，必须保留清理任务。当前代码提供 `baiou.product.api.cleanup`，服务器应定时执行。
+- 当前网页 alpha 已经可用，但还不是完整商业化产品：没有支付、没有正式账号系统、没有微信小程序正式发布链路。
+- 质量模式会比快速模式慢，前端已有等待提示和 90 秒超时；如果后续模型调用经常超过 90 秒，需要调大前端超时时间或改成异步任务轮询。
+- 管理后台可以动态调额度，但环境变量仍会在服务重启后作为基础配置载入；需要区分“服务器 env 默认值”和“admin_config 动态覆盖值”。
+- 不要把 `tt/` 里的真实测试素材上传到外部云平台样例仓库，也不要打包进部署镜像。
+- 不要把 `outputs/baiou/cases/knowledge/eval_sets/` 里的 holdout 测评集上传到 RAG 知识库，避免评测泄漏。
+- 服务器 root 密码曾在对话中出现过，正式迁移或公开前应轮换密码，保留 SSH key 登录。
