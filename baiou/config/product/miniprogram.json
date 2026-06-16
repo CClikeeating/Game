@@ -25,6 +25,7 @@
   },
   "auth": {"default_user_id": "dev_user", "dev_login_enabled": true, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
   "admin": {"token": ""},
+  "network": {"trusted_proxy_ips": ["127.0.0.1", "::1"]},
   "web_alpha": {"access_required": false, "access_codes": [], "access_code_hashes": []},
   "retention": {"upload_days": 30, "run_days": 30},
   "announcements": [

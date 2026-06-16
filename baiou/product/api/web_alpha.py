@@ -103,6 +103,27 @@ PAGE = """<!doctype html>
       padding: 12px;
       background: var(--surface-2);
     }
+    .upload-state {
+      display: grid;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      padding: 10px;
+    }
+    .upload-count { font-weight: 800; color: var(--ink); font-size: 13px; }
+    .file-list { display: flex; gap: 6px; flex-wrap: wrap; }
+    .file-chip {
+      border: 1px solid #cddbd7;
+      border-radius: 999px;
+      padding: 5px 8px;
+      background: #f8fbfa;
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .upload-error { color: var(--bad); font-size: 12px; line-height: 1.45; }
     .privacy { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .mode-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .mode small { display: block; margin-top: 2px; font-weight: 600; opacity: .78; }
@@ -188,6 +209,11 @@ PAGE = """<!doctype html>
               <label for="images">聊天截图</label>
               <div class="upload">
                 <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+                <div class="upload-state" aria-live="polite">
+                  <div class="upload-count" id="uploadCount">已选择 0 张 / 最多 3 张</div>
+                  <div class="file-list" id="fileList"><span class="file-chip">还没选择图片</span></div>
+                  <div class="upload-error hidden" id="uploadError"></div>
+                </div>
                 <div class="privacy" id="uploadHint">截图仅用于本次分析与服务优化，并会按保留周期清理；请勿上传身份证、银行卡、住址等敏感信息。</div>
               </div>
             </div>
@@ -203,7 +229,7 @@ PAGE = """<!doctype html>
               <div class="label">模式</div>
               <div class="mode-row">
                 <button class="mode active" type="button" data-mode="bailian_rag_fast">快速<small>日常够用</small></button>
-                <button class="mode" type="button" data-mode="bailian_rag_quality">质量<small>更细致</small></button>
+                <button class="mode" type="button" data-mode="bailian_rag_quality">质量<small>会更慢，消耗 2 次额度</small></button>
               </div>
             </div>
             <div class="actions">
@@ -230,7 +256,11 @@ PAGE = """<!doctype html>
       conversation: null,
       mode: boot.defaultMode || "bailian_rag_fast",
       lastRun: null,
-      limits: boot.limits || {}
+      limits: boot.limits || {},
+      uploadError: "",
+      waitingTimer: null,
+      waitingStartedAt: 0,
+      waitingPhase: ""
     };
     const $ = selector => document.querySelector(selector);
     const escapeHtml = value => String(value || "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -263,10 +293,44 @@ PAGE = """<!doctype html>
       const mb = state.limits.max_image_mb || 8;
       $("#uploadHint").textContent = `最多 ${max} 张，单张 ${mb}MB。截图仅用于本次分析与服务优化，并会按保留周期清理；请勿上传身份证、银行卡、住址等敏感信息。`;
       updateModeCost();
+      renderUploadState();
     }
     function updateModeCost() {
       const costs = state.limits.mode_unit_costs || {};
-      $("#modeCost").textContent = "本次消耗 " + (costs[state.mode] || 1);
+      const cost = costs[state.mode] || 1;
+      $("#modeCost").textContent = state.mode === "bailian_rag_quality" ? `质量模式：更慢，消耗 ${cost} 次额度` : `本次消耗 ${cost}`;
+    }
+    function selectedFiles() {
+      return Array.from($("#images").files || []);
+    }
+    function validateSelectedImages() {
+      const files = selectedFiles();
+      const maxImages = state.limits.max_images_per_reply || 3;
+      const maxBytes = (state.limits.max_image_mb || 8) * 1024 * 1024;
+      const allowed = new Set(["png", "jpg", "jpeg", "webp"]);
+      if (files.length > maxImages) return `一次最多上传 ${maxImages} 张截图。`;
+      for (const file of files) {
+        const ext = (file.name.split(".").pop() || "").toLowerCase();
+        if (!allowed.has(ext)) return `${file.name} 格式不支持，请上传 png、jpg、jpeg 或 webp。`;
+        if (file.size > maxBytes) return `${file.name} 超过 ${state.limits.max_image_mb || 8}MB。`;
+      }
+      return "";
+    }
+    function renderUploadState() {
+      const files = selectedFiles();
+      const maxImages = state.limits.max_images_per_reply || 3;
+      $("#uploadCount").textContent = `已选择 ${files.length} 张 / 最多 ${maxImages} 张`;
+      $("#fileList").innerHTML = files.length
+        ? files.map(file => `<span class="file-chip">${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>`).join("")
+        : '<span class="file-chip">还没选择图片</span>';
+      const error = state.uploadError || validateSelectedImages();
+      $("#uploadError").textContent = error;
+      $("#uploadError").classList.toggle("hidden", !error);
+    }
+    function formatBytes(size) {
+      if (!size) return "0KB";
+      if (size < 1024 * 1024) return Math.max(1, Math.round(size / 1024)) + "KB";
+      return (size / 1024 / 1024).toFixed(1) + "MB";
     }
     async function loadSession() {
       if (!state.token) return showApp(false);
@@ -312,7 +376,10 @@ PAGE = """<!doctype html>
     async function generate() {
       const conversation = await ensureConversation();
       if (!conversation) throw new Error("会话初始化失败，请刷新重试。");
-      const files = Array.from($("#images").files || []);
+      state.uploadError = validateSelectedImages();
+      renderUploadState();
+      if (state.uploadError) throw new Error(state.uploadError);
+      const files = selectedFiles();
       const maxImages = state.limits.max_images_per_reply || 3;
       if (!$("#question").value.trim()) throw new Error("请填写要回复的问题。");
       if (files.length < (state.limits.min_images_per_reply || 1)) throw new Error("请上传聊天截图。");
@@ -325,19 +392,51 @@ PAGE = """<!doctype html>
       if ($("#dryRun").checked) form.append("dry_run", "true");
       files.forEach(file => form.append("images", file));
       $("#generateBtn").disabled = true;
-      setStatus("#workStatus", "生成中...");
+      startWaitingTimer();
       try {
-        const data = await fetch("/api/v1/replies", { method: "POST", headers: headers(false), body: form });
-        const payload = await data.json();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 90000);
+        const data = await fetch("/api/v1/replies", { method: "POST", headers: headers(false), body: form, signal: controller.signal }).finally(() => clearTimeout(timeout));
+        const type = data.headers.get("content-type") || "";
+        const payload = type.includes("application/json") ? await data.json() : { error: { message: await data.text() } };
         if (!data.ok || payload.ok === false) throw new Error((payload.error && payload.error.message) || "生成失败");
         state.lastRun = payload.reply_run;
         updateLimits(payload.limits);
         renderResult(payload.reply_run);
         $("#images").value = "";
+        state.uploadError = "";
+        renderUploadState();
         setStatus("#workStatus", "已生成");
+      } catch (error) {
+        setStatus("#workStatus", visibleRequestError(error), true);
       } finally {
+        stopWaitingTimer();
         $("#generateBtn").disabled = false;
       }
+    }
+    function startWaitingTimer() {
+      stopWaitingTimer();
+      state.waitingStartedAt = Date.now();
+      state.waitingPhase = "正在理解截图";
+      updateWaitingStatus();
+      state.waitingTimer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - state.waitingStartedAt) / 1000);
+        state.waitingPhase = seconds >= 8 ? "正在生成回复" : "正在理解截图";
+        updateWaitingStatus();
+      }, 1000);
+    }
+    function updateWaitingStatus() {
+      const seconds = Math.floor((Date.now() - state.waitingStartedAt) / 1000);
+      setStatus("#workStatus", `${state.waitingPhase} · 已等待 ${seconds} 秒`);
+    }
+    function stopWaitingTimer() {
+      if (state.waitingTimer) clearInterval(state.waitingTimer);
+      state.waitingTimer = null;
+    }
+    function visibleRequestError(error) {
+      if (error && error.name === "AbortError") return "请求超时，请稍后重试。";
+      if (!navigator.onLine) return "网络已断开，请检查网络后重试。";
+      return (error && error.message) || "请求失败，请稍后重试。";
     }
     function renderResult(run) {
       const answer = run.answer || {};
@@ -379,6 +478,12 @@ PAGE = """<!doctype html>
     }
     $("#loginBtn").addEventListener("click", login);
     $("#accessCode").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
+    $("#images").addEventListener("change", () => {
+      state.uploadError = validateSelectedImages();
+      renderUploadState();
+      if (state.uploadError) setStatus("#workStatus", state.uploadError, true);
+      else setStatus("#workStatus", selectedFiles().length ? "图片已选择，可以生成。" : "");
+    });
     $("#generateBtn").addEventListener("click", () => generate().catch(error => setStatus("#workStatus", error.message, true)));
     document.querySelectorAll("button.mode").forEach(button => button.addEventListener("click", () => selectMode(button.dataset.mode)));
     selectMode(state.mode);

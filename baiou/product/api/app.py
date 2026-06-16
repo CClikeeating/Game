@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
     "admin": {"token": ""},
+    "network": {"trusted_proxy_ips": ["127.0.0.1", "::1"]},
     "web_alpha": {"access_required": False, "access_codes": [], "access_code_hashes": []},
     "retention": {"upload_days": 30, "run_days": 30},
     "announcements": [],
@@ -91,7 +92,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
         else:
             return fail("login_code_required", "请先完成微信登录。", 401)
-        ip_info = client_ip_info()
+        ip_info = client_ip_info(config)
         token = store.create_session(user["user_id"], int(config.get("session_days", 30)), ip_info["hash"], ip_info["display"])
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
@@ -105,7 +106,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return fail("web_access_denied", "内测访问码不正确。", 401)
         user_id = "web_" + uuid.uuid4().hex[:24]
         user = store.ensure_user(user_id, "", "网页内测用户")
-        ip_info = client_ip_info()
+        ip_info = client_ip_info(config)
         token = store.create_session(user["user_id"], int(config.get("session_days", 30)), ip_info["hash"], ip_info["display"])
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
 
@@ -412,6 +413,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
     runtime = raw.get("runtime", {})
     auth = raw.get("auth", {})
     admin = raw.get("admin", {}) if isinstance(raw.get("admin"), dict) else {}
+    network = raw.get("network", {}) if isinstance(raw.get("network"), dict) else {}
     web_alpha = raw.get("web_alpha", {}) if isinstance(raw.get("web_alpha"), dict) else {}
     retention = raw.get("retention", {}) if isinstance(raw.get("retention"), dict) else {}
     rag = raw.get("rag", {}) if isinstance(raw.get("rag"), dict) else {}
@@ -454,6 +456,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "wechat_secret": os.environ.get("BAIOU_WECHAT_SECRET") or auth.get("wechat_secret", ""),
         "admin_token": os.environ.get("BAIOU_ADMIN_TOKEN") or admin.get("token", ""),
         "admin_config_path": str(admin_config_path),
+        "trusted_proxy_ips": configured_list(os.environ.get("BAIOU_TRUSTED_PROXY_IPS") or network.get("trusted_proxy_ips", ["127.0.0.1", "::1"])),
         "upload_retention_days": int(os.environ.get("BAIOU_UPLOAD_RETENTION_DAYS") or retention.get("upload_days", 30)),
         "run_retention_days": int(os.environ.get("BAIOU_RUN_RETENTION_DAYS") or retention.get("run_days", 30)),
         "vector_store_ids": configured_list(rag.get("vector_store_ids") or os.environ.get("BAIOU_VECTOR_STORE_IDS") or "n7s0ou2dpt"),
@@ -528,14 +531,23 @@ def hmac_compare(left: str, right: str) -> bool:
     return hashlib.sha256(left.encode("utf-8")).digest() == hashlib.sha256(right.encode("utf-8")).digest()
 
 
-def client_ip_key() -> str:
-    return client_ip_info()["hash"]
+def client_ip_key(config: dict[str, Any]) -> str:
+    return client_ip_info(config)["hash"]
 
 
-def client_ip_info() -> dict[str, str]:
-    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    ip = forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or "unknown"
+def client_ip_info(config: dict[str, Any]) -> dict[str, str]:
+    remote_addr = request.remote_addr or "unknown"
+    ip = remote_addr
+    if proxy_ip_trusted(remote_addr, config):
+        forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        real_ip = request.headers.get("X-Real-IP", "").strip()
+        ip = forwarded or real_ip or remote_addr
     return {"hash": hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24], "display": mask_ip(ip)}
+
+
+def proxy_ip_trusted(remote_addr: str, config: dict[str, Any]) -> bool:
+    trusted = set(configured_list(config.get("trusted_proxy_ips", [])))
+    return remote_addr in trusted
 
 
 def mask_ip(value: str) -> str:
@@ -875,7 +887,7 @@ def usage_payload(store: ProductStore, config: dict[str, Any], user_id: str) -> 
     quota = effective_daily_reply_quota(store, config, user_id)
     ip_quota = int(config.get("web_ip_daily_quota", 0))
     site_quota = int(config.get("web_site_daily_quota", 0))
-    ip_used = store.quota_units_today("ip", client_ip_key()) if ip_quota else 0
+    ip_used = store.quota_units_today("ip", client_ip_key(config)) if ip_quota else 0
     site_used = store.quota_units_today("site", "global") if site_quota else 0
     return {
         **public_limits(config),
@@ -925,7 +937,7 @@ def reply_quota_error(store: ProductStore, config: dict[str, Any], user_id: str,
         return fail("daily_quota_exhausted", "今日回复次数已用完。", 429, {"remaining_quota": max(0, user_quota - used)})
     ip_quota = int(config.get("web_ip_daily_quota", 0))
     if ip_quota:
-        ip_used = store.quota_units_today("ip", client_ip_key())
+        ip_used = store.quota_units_today("ip", client_ip_key(config))
         if ip_used + unit_cost > ip_quota:
             return fail("ip_daily_quota_exhausted", "当前网络今日内测额度已用完。", 429, {"remaining_quota": max(0, ip_quota - ip_used)})
     site_quota = int(config.get("web_site_daily_quota", 0))
@@ -938,7 +950,7 @@ def reply_quota_error(store: ProductStore, config: dict[str, Any], user_id: str,
 
 def increment_reply_quota_units(store: ProductStore, config: dict[str, Any], unit_cost: int) -> None:
     if int(config.get("web_ip_daily_quota", 0)):
-        store.increment_quota_units("ip", client_ip_key(), unit_cost)
+        store.increment_quota_units("ip", client_ip_key(config), unit_cost)
     if int(config.get("web_site_daily_quota", 0)):
         store.increment_quota_units("site", "global", unit_cost)
 

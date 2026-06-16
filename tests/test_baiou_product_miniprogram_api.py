@@ -130,6 +130,12 @@ def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch
     assert "Baiou" in html
     assert "截图理解" not in html
     assert "参考片段" not in html
+    assert "已选择 0 张 / 最多 3 张" in html
+    assert "格式不支持" in html
+    assert "正在理解截图" in html
+    assert "正在生成回复" in html
+    assert "已等待" in html
+    assert "会更慢，消耗 2 次额度" in html
     assert "test-code" not in html
     assert denied.status_code == 401
     assert dev_login.status_code == 401
@@ -356,6 +362,40 @@ def test_admin_lists_users_and_ip_usage(monkeypatch, tmp_path: Path) -> None:
     assert users[0]["today_usage"] == 1
     assert ip_usage[0]["ip_display"] == "203.0.113.*"
     assert ip_usage[0]["today_units"] == 1
+
+
+def test_client_ip_ignores_forwarded_for_from_untrusted_remote(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        admin_token="admin-secret",
+        web_access_required=True,
+        web_access_codes=["test-code"],
+        trusted_proxy_ips=["127.0.0.1"],
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    login = client.post(
+        "/api/v1/auth/web-login",
+        headers={"X-Forwarded-For": "203.0.113.8"},
+        environ_base={"REMOTE_ADDR": "198.51.100.9"},
+        json={"access_code": "test-code"},
+    ).get_json()
+    headers = {
+        "Authorization": f"Bearer {login['token']}",
+        "X-Forwarded-For": "203.0.113.8",
+    }
+    conv = client.get("/api/v1/conversations", headers=headers, environ_base={"REMOTE_ADDR": "198.51.100.9"}).get_json()["conversations"][0]["conversation_id"]
+    client.post(
+        "/api/v1/replies",
+        headers=headers,
+        environ_base={"REMOTE_ADDR": "198.51.100.9"},
+        json={"conversation_id": conv, "question": "hello"},
+    )
+
+    users = client.get("/api/v1/admin/users", headers=admin_headers()).get_json()["users"]
+    ip_usage = client.get("/api/v1/admin/ip-usage", headers=admin_headers()).get_json()["ip_usage"]
+
+    assert users[0]["last_ip_display"] == "198.51.100.*"
+    assert ip_usage[0]["ip_display"] == "198.51.100.*"
 
 
 def test_user_quota_override_zero_and_clear_restore_default(monkeypatch, tmp_path: Path) -> None:
