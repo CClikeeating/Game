@@ -11,6 +11,7 @@ from baiou.common.io import resolve_path, write_json
 from baiou.common.runtime_model_client import RuntimeModelClient
 from baiou.case_pipeline.knowledge.search_segments import search_segments
 from baiou.common.chat_json_client import ChatJsonClient, parse_json_content
+from baiou.product.runtime.bailian_workflow import BailianWorkflowClient
 from baiou.product.runtime.vision_understanding import dry_run_image_summary, understand_images
 from baiou.product.common import OUTPUT_ROOT, load_config, load_prompt, timestamp_id
 
@@ -198,6 +199,35 @@ def run_bailian_rag_fast(
         }
         write_json(output_dir / "summary.json", preview)
         return preview
+
+    workflow_cfg, workflow_app_id = bailian_workflow_app_config(models, mode_name)
+    if workflow_app_id:
+        workflow_payload = build_bailian_workflow_payload(
+            workflow_cfg,
+            mode_name,
+            question,
+            context,
+            image_understanding,
+            input_text,
+            quality_guidance,
+            user_id,
+        )
+        reply_result = BailianWorkflowClient(f"{mode_name}_workflow_app", workflow_cfg, workflow_app_id, user_id).run(workflow_payload)
+        summary = bailian_workflow_summary(
+            run_id,
+            output_dir,
+            question,
+            context,
+            image_paths,
+            image_data,
+            image_understanding,
+            mode_name,
+            quality_guidance,
+            label_result,
+            reply_result,
+        )
+        write_json(output_dir / "summary.json", summary)
+        return summary
 
     rag_cfg, error = bailian_rag_config(models)
     if error:
@@ -443,6 +473,215 @@ def quality_label_config(models: dict[str, Any]) -> dict[str, Any]:
     cfg["enable_thinking"] = False
     cfg["response_format_json"] = True
     return cfg
+
+
+def bailian_workflow_app_config(models: dict[str, Any], mode: str) -> tuple[dict[str, Any], str]:
+    root = models.get("bailian_workflow_apps", {})
+    if not isinstance(root, dict) or not root.get("enabled", False):
+        return {}, ""
+    apps = root.get("apps", {}) if isinstance(root.get("apps"), dict) else {}
+    app_cfg = apps.get(mode, {}) if isinstance(apps.get(mode, {}), dict) else {}
+    if app_cfg.get("enabled", True) is False:
+        return {}, ""
+
+    cfg = json.loads(json.dumps(root))
+    cfg.pop("apps", None)
+    cfg.update(app_cfg)
+
+    app_id_env = str(cfg.get("app_id_env", "")).strip()
+    app_id = os.environ.get(app_id_env, "").strip() if app_id_env else ""
+    if not app_id:
+        app_id = str(cfg.get("app_id", "")).strip()
+    if app_id:
+        cfg["app_id"] = app_id
+    return cfg, app_id
+
+
+def build_bailian_workflow_payload(
+    config: dict[str, Any],
+    mode: str,
+    question: str,
+    context: str,
+    image_understanding: str,
+    input_text: str,
+    quality_guidance: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any]:
+    prompt_key = str(config.get("prompt_key") or "prompt")
+    input_key = str(config.get("input_key") or "input")
+    parameters_key = str(config.get("parameters_key") or "parameters")
+    input_payload = {
+        prompt_key: input_text,
+        "question": question,
+        "context": context,
+        "image_understanding": image_understanding,
+        "mode": mode,
+    }
+    if quality_guidance:
+        input_payload["quality_guidance"] = quality_guidance
+    payload: dict[str, Any] = {
+        input_key: input_payload,
+        parameters_key: {
+            "mode": mode,
+            "user_id": str(user_id),
+        },
+    }
+    app_id_field = str(config.get("app_id_field", "")).strip()
+    if app_id_field:
+        payload[app_id_field] = str(config.get("app_id", "")).strip()
+    extra_payload = config.get("extra_payload", {})
+    if isinstance(extra_payload, dict):
+        payload.update(json.loads(json.dumps(extra_payload)))
+    return payload
+
+
+def bailian_workflow_summary(
+    run_id: str,
+    output_dir: Path,
+    question: str,
+    context: str,
+    image_paths: list[Path],
+    image_data: dict[str, Any],
+    image_understanding: str,
+    mode: str,
+    quality_guidance: dict[str, Any],
+    label_result: dict[str, Any],
+    reply_result: dict[str, Any],
+) -> dict[str, Any]:
+    parsed, references, status = parse_bailian_workflow_result(reply_result)
+    labels = extract_labels(parsed) if parsed else {}
+    answer = normalize_reply_result(parsed, labels, references)
+    if status != reply_result.get("status"):
+        reply_result = dict(reply_result)
+        reply_result["status"] = status
+        if status.endswith("_invalid") and not reply_result.get("error"):
+            reply_result["error"] = "workflow_answer_json_invalid"
+        answer["debug"] = {**answer.get("debug", {}), "workflow_status": status, "workflow_error": reply_result.get("error", "")}
+    summary = {
+        "status": reply_result.get("status", ""),
+        "mode": mode,
+        "run_id": run_id,
+        "question": question,
+        "context": context,
+        "images": [str(path) for path in image_paths],
+        "image_understanding": image_understanding,
+        "vision_result": image_data.get("model_result", {}),
+        "labels": answer.get("labels", {}),
+        "quality_guidance": quality_guidance,
+        "reference_segments": references,
+        "answer": answer,
+        "label_result": compact_model_result(label_result) if label_result else {},
+        "reply_result": compact_workflow_result(reply_result),
+        "output_dir": str(output_dir),
+    }
+    return summary
+
+
+def parse_bailian_workflow_result(reply_result: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    if reply_result.get("status") != "workflow_success":
+        return {}, [], str(reply_result.get("status", "workflow_call_failed"))
+    raw_response = reply_result.get("raw_response", {})
+    parsed = extract_workflow_answer(raw_response)
+    if isinstance(parsed, str):
+        parsed = parse_json_content(parsed)
+    if not isinstance(parsed, dict):
+        return {}, [], "workflow_json_invalid"
+    parsed = normalize_workflow_answer(parsed)
+    references = normalize_workflow_references(parsed.get("reference_segments", []))
+    return parsed, references, "workflow_success"
+
+
+def extract_workflow_answer(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return {}
+    for key in ("answer", "result", "data"):
+        value = data.get(key)
+        if looks_like_reply_payload(value):
+            return value
+    output = data.get("output")
+    if isinstance(output, dict):
+        for key in ("text", "answer", "result", "content"):
+            value = output.get(key)
+            if value not in (None, ""):
+                return value
+        if looks_like_reply_payload(output):
+            return output
+    if isinstance(output, str):
+        return output
+    if looks_like_reply_payload(data):
+        return data
+    return {}
+
+
+def looks_like_reply_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if not isinstance(value, dict):
+        return False
+    keys = {"reply", "answer", "coach_analysis", "labels", "risk_warning", "next_step", "reference_segments"}
+    return bool(keys & set(value))
+
+
+def normalize_workflow_answer(parsed: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(parsed.get("answer"), dict) and not parsed.get("reply"):
+        parsed = dict(parsed.get("answer", {}))
+    elif parsed.get("answer") and not parsed.get("reply"):
+        parsed = {**parsed, "reply": str(parsed.get("answer", ""))}
+    return parsed
+
+
+def normalize_workflow_references(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    references: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            references.append(
+                {
+                    "segment_id": item.get("segment_id") or item.get("id") or item.get("file_id") or f"workflow_ref_{index}",
+                    "file_id": item.get("file_id", ""),
+                    "filename": item.get("filename") or item.get("file_name") or "",
+                    "score": item.get("score", ""),
+                    "text": item.get("text") or item.get("content") or item.get("quote") or "",
+                    "type": item.get("type", "workflow_reference"),
+                    "labels": item.get("labels", {}) if isinstance(item.get("labels", {}), dict) else {},
+                    "secondary_labels": item.get("secondary_labels", {}) if isinstance(item.get("secondary_labels", {}), dict) else {},
+                    "match_reasons": item.get("match_reasons", ["百炼工作流应用返回"]),
+                }
+            )
+        elif str(item).strip():
+            references.append(
+                {
+                    "segment_id": str(item).strip(),
+                    "file_id": "",
+                    "filename": "",
+                    "score": "",
+                    "text": "",
+                    "type": "workflow_reference",
+                    "labels": {},
+                    "secondary_labels": {},
+                    "match_reasons": ["百炼工作流应用返回"],
+                }
+            )
+    return references
+
+
+def compact_workflow_result(result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        "status": result.get("status", ""),
+        "model": result.get("model", ""),
+        "client": result.get("client", ""),
+        "app_id": result.get("app_id", ""),
+        "error": result.get("error", ""),
+        "elapsed_seconds": result.get("elapsed_seconds", 0),
+        "usage": result.get("usage", {}),
+        "response_debug": result.get("response_debug", {}),
+    }
+    if result.get("raw_response"):
+        compact["raw_response"] = result.get("raw_response", {})
+    if result.get("raw_text"):
+        compact["raw_text_preview"] = str(result.get("raw_text", ""))[:4000]
+    return compact
 
 
 def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:

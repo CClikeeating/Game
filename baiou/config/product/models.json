@@ -4,6 +4,29 @@
     "default": "71",
     "bailian_rag_quality": "72"
   },
+  "bailian_workflow_apps": {
+    "enabled": false,
+    "provider": "bailian",
+    "api_style": "bailian_workflow_app",
+    "base_url": "https://dashscope.aliyuncs.com",
+    "endpoint": "",
+    "endpoint_path": "/api/v1/apps/{app_id}/completion",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "timeout_seconds": 180,
+    "input_key": "input",
+    "prompt_key": "prompt",
+    "parameters_key": "parameters",
+    "apps": {
+      "bailian_rag_fast": {
+        "app_id_env": "BAIOU_BAILIAN_WORKFLOW_FAST_APP_ID",
+        "app_id": ""
+      },
+      "bailian_rag_quality": {
+        "app_id_env": "BAIOU_BAILIAN_WORKFLOW_QUALITY_APP_ID",
+        "app_id": ""
+      }
+    }
+  },
   "case_primary": {
     "enabled": true,
     "provider": "deepseek",
@@ -86,5 +109,4 @@
     "image_detail": "auto"
   }
 }
-
 
