@@ -1,6 +1,7 @@
 import json
 
 from baiou.product.runtime.reply_engine import (
+    MODE_BAILIAN_RAG_FAST,
     MODE_BAILIAN_RAG_QUALITY,
     bailian_rag_config,
     build_bailian_rag_prompt,
@@ -8,6 +9,7 @@ from baiou.product.runtime.reply_engine import (
     normalize_mode,
     normalize_quality_guidance,
     resolve_user_id,
+    vision_style_for_mode,
 )
 
 
@@ -42,6 +44,13 @@ def test_bailian_rag_max_num_results_is_configurable(monkeypatch) -> None:
     cfg, error = bailian_rag_config(models)
     assert error == ""
     assert cfg["file_search"]["max_num_results"] == 5
+
+
+def test_fast_mode_uses_short_vision_prompt_but_quality_keeps_full_prompt() -> None:
+    models = {"vision_model": {}}
+
+    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_FAST) == "dialogue"
+    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_QUALITY) == "full"
 
 
 def test_admin_config_overrides_rag_file_search(monkeypatch, tmp_path) -> None:

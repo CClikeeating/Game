@@ -316,6 +316,14 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return fail("reply_run_not_found", "回复记录不存在。", 404)
         return ok({"reply_run": public_admin_reply_run(item, config)})
 
+    @app.get("/api/v1/admin/reply-runs")
+    def admin_reply_runs():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 50, 1, 500)
+        return ok({"reply_runs": [public_admin_reply_run_row(item, config) for item in store.list_admin_reply_runs(limit)]})
+
     @app.get("/api/v1/admin/feedback")
     def admin_feedback():
         auth_error = require_admin(config)
@@ -999,7 +1007,33 @@ def public_admin_reply_run(item: dict[str, Any], config: dict[str, Any]) -> dict
     output["image_count"] = item.get("image_count", 0)
     output["image_understanding"] = item.get("image_understanding", "")
     output["reference_segments"] = compact_references(item.get("reference_segments", []))
+    output["timings"] = admin_timings(item.get("answer", {}))
     return output
+
+
+def public_admin_reply_run_row(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": item.get("run_id", ""),
+        "runtime_run_id": item.get("runtime_run_id", ""),
+        "user_id": item.get("user_id", ""),
+        "conversation_id": item.get("conversation_id", ""),
+        "mode": item.get("mode", ""),
+        "display_mode": config["modes"].get(item.get("mode", ""), item.get("mode", "")),
+        "status": item.get("status", ""),
+        "question": item.get("question", ""),
+        "image_count": item.get("image_count", 0),
+        "reference_count": item.get("reference_count", 0),
+        "timings": item.get("timings", {}),
+        "created_at": item.get("created_at", ""),
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
+def admin_timings(answer: Any) -> dict[str, Any]:
+    if not isinstance(answer, dict):
+        return {}
+    timings = answer.get("_timings", {})
+    return timings if isinstance(timings, dict) else {}
 
 
 def compact_references(items: Any) -> list[dict[str, Any]]:
@@ -1047,6 +1081,7 @@ def public_feedback_detail(item: dict[str, Any]) -> dict[str, Any]:
         "risk_warning": item.get("risk_warning", ""),
         "image_count": item.get("image_count", 0),
         "reference_count": item.get("reference_count", 0),
+        "timings": item.get("timings", {}),
         "created_at": item.get("created_at", ""),
     }
 
@@ -1260,6 +1295,13 @@ def admin_page_html() -> str:
       </table>
     </section>
     <section class="panel feedback">
+      <h2>最近生成耗时</h2>
+      <table>
+        <thead><tr><th>时间</th><th>模式/状态</th><th>用户</th><th>图片/召回</th><th>分段耗时</th></tr></thead>
+        <tbody id="replyRuns"></tbody>
+      </table>
+    </section>
+    <section class="panel feedback">
       <h2>最近反馈</h2>
       <table>
         <thead><tr><th>时间</th><th>评分</th><th>备注</th><th>问题</th><th>回复</th></tr></thead>
@@ -1380,6 +1422,24 @@ def admin_page_html() -> str:
     function fillIpUsage(rows) {
       document.querySelector("#ipUsage").innerHTML = (rows || []).map(row => `<tr><td>${escapeHtml(row.ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.ip_hash)}</span></td><td>${row.today_units || 0}</td><td>${escapeHtml(row.recent_request_at || row.recent_login_at || "-")}</td><td>${row.user_count || 0}</td></tr>`).join("");
     }
+    function timingText(timings) {
+      timings = timings || {};
+      const vision = (timings.vision || {}).elapsed_seconds || 0;
+      const label = (timings.label || {}).elapsed_seconds || 0;
+      const reply = (timings.reply || {}).elapsed_seconds || 0;
+      const total = timings.total_model_elapsed_seconds || (vision + label + reply);
+      return `总 ${Number(total).toFixed(2)}s / 图 ${Number(vision).toFixed(2)}s / 标 ${Number(label).toFixed(2)}s / 回 ${Number(reply).toFixed(2)}s`;
+    }
+    function fillReplyRuns(rows) {
+      document.querySelector("#replyRuns").innerHTML = (rows || []).map(row => `
+        <tr>
+          <td>${escapeHtml(row.created_at || "-")}<br><span class="tag">${escapeHtml(row.run_id || "")}</span></td>
+          <td>${escapeHtml(row.display_mode || row.mode || "")}<br><span class="tag">${escapeHtml(row.status || "")}</span></td>
+          <td>${escapeHtml(row.user_id || "")}</td>
+          <td>图片 ${row.image_count || 0}<br>召回 ${row.reference_count || 0}</td>
+          <td>${escapeHtml(timingText(row.timings))}</td>
+        </tr>`).join("");
+    }
     async function saveUserQuota(row) {
       const userId = row.dataset.userId;
       const quota = row.querySelector(".quota-input").value;
@@ -1399,18 +1459,20 @@ def admin_page_html() -> str:
     async function loadAll() {
       localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("加载中...");
-      const [cfg, stats, feedback, users, ipUsage] = await Promise.all([
+      const [cfg, stats, feedback, users, ipUsage, replyRuns] = await Promise.all([
         api("/api/v1/admin/config"),
         api("/api/v1/admin/stats"),
         api("/api/v1/admin/feedback?limit=20"),
         api("/api/v1/admin/users?limit=100"),
         api("/api/v1/admin/ip-usage?limit=100"),
+        api("/api/v1/admin/reply-runs?limit=20"),
       ]);
       fillConfig(cfg.config);
       fillMetrics(stats.stats);
       fillFeedback(feedback.feedback);
       fillUsers(users.users);
       fillIpUsage(ipUsage.ip_usage);
+      fillReplyRuns(replyRuns.reply_runs);
       setStatus("已加载");
     }
     form.addEventListener("submit", async event => {

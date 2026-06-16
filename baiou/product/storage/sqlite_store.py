@@ -331,6 +331,7 @@ class ProductStore:
 
     def update_reply_run(self, user_id: str, run_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
         answer = result.get("answer", {}) if isinstance(result.get("answer", {}), dict) else {}
+        answer = {**answer, "_timings": model_timings_from_result(result)}
         references = result.get("reference_segments", [])
         if not isinstance(references, list):
             references = []
@@ -640,6 +641,21 @@ class ProductStore:
     def feedback_export_rows(self, limit: int = 1000) -> list[dict[str, Any]]:
         return self.list_feedback_detail(limit)
 
+    def list_admin_reply_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    run_id, user_id, conversation_id, mode, status, question, image_count,
+                    answer_json, reference_segments_json, runtime_run_id, created_at, updated_at
+                FROM reply_runs
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [decode_admin_reply_run_row(row) for row in rows]
+
     def delete_upload_rows_before(self, cutoff_iso: str) -> list[str]:
         with self.connect() as conn:
             rows = conn.execute("SELECT path FROM uploads WHERE created_at < ?", (cutoff_iso,)).fetchall()
@@ -727,5 +743,48 @@ def decode_feedback_row(row: sqlite3.Row) -> dict[str, Any]:
     item["reply"] = answer.get("reply", "") if isinstance(answer, dict) else ""
     item["coach_analysis"] = answer.get("coach_analysis", "") if isinstance(answer, dict) else ""
     item["risk_warning"] = answer.get("risk_warning", "") if isinstance(answer, dict) else ""
+    item["timings"] = answer.get("_timings", {}) if isinstance(answer, dict) else {}
     item["reference_count"] = len(refs) if isinstance(refs, list) else 0
     return item
+
+
+def decode_admin_reply_run_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    answer = decode_json(item.pop("answer_json", ""), {})
+    refs = decode_json(item.pop("reference_segments_json", ""), [])
+    item["reply"] = answer.get("reply", "") if isinstance(answer, dict) else ""
+    item["risk_warning"] = answer.get("risk_warning", "") if isinstance(answer, dict) else ""
+    item["timings"] = answer.get("_timings", {}) if isinstance(answer, dict) else {}
+    item["reference_count"] = len(refs) if isinstance(refs, list) else 0
+    return item
+
+
+def model_timings_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    items = {
+        "vision": result.get("vision_result", {}),
+        "label": result.get("label_result", {}),
+        "reply": result.get("reply_result", {}),
+    }
+    timings: dict[str, Any] = {}
+    total = 0.0
+    for key, value in items.items():
+        value = value if isinstance(value, dict) else {}
+        elapsed = numeric_elapsed(value.get("elapsed_seconds"))
+        usage = value.get("usage", {}) if isinstance(value.get("usage", {}), dict) else {}
+        timings[key] = {
+            "elapsed_seconds": elapsed,
+            "model": value.get("model", ""),
+            "status": value.get("status", ""),
+            "total_tokens": usage.get("total_tokens"),
+        }
+        total += elapsed
+    timings["total_model_elapsed_seconds"] = round(total, 2)
+    timings["reference_count"] = len(result.get("reference_segments", [])) if isinstance(result.get("reference_segments", []), list) else 0
+    return timings
+
+
+def numeric_elapsed(value: Any) -> float:
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0

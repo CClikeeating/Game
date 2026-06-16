@@ -47,7 +47,9 @@ def client_with_runtime(monkeypatch, tmp_path: Path, config: dict[str, Any] | No
             "labels": {"stage": "test"},
             "reference_segments": [{"segment_id": "seg_1", "text": "sample", "filename": "seg_1.md", "match_reasons": ["hit"]}],
             "output_dir": str(tmp_path / "secret-output"),
-            "reply_result": {"status": "model_success"},
+            "vision_result": {"status": "model_success", "model": "vision-test", "elapsed_seconds": 1.25, "usage": {"total_tokens": 101}},
+            "label_result": {"status": "model_success", "model": "label-test", "elapsed_seconds": 2.5, "usage": {"total_tokens": 202}},
+            "reply_result": {"status": "model_success", "model": "reply-test", "elapsed_seconds": 3.75, "usage": {"total_tokens": 303}},
         }
 
     monkeypatch.setattr(api_app, "run_reply", fake_run_reply)
@@ -334,7 +336,26 @@ def test_admin_page_exports_csv_with_authorization_header(monkeypatch, tmp_path:
 
     assert "?token=" not in html
     assert 'fetch("/api/v1/admin/feedback/export.csv"' in html
+    assert "/api/v1/admin/reply-runs?limit=20" in html
     assert '"Authorization": "Bearer " + tokenInput.value.trim()' in html
+
+
+def test_admin_reply_runs_include_segmented_model_timings(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello"})
+    runs = client.get("/api/v1/admin/reply-runs", headers=admin_headers()).get_json()["reply_runs"]
+    feedback = client.get("/api/v1/admin/feedback", headers=admin_headers()).get_json()["feedback"]
+
+    assert response.status_code == 200
+    assert runs[0]["timings"]["vision"]["elapsed_seconds"] == 1.25
+    assert runs[0]["timings"]["label"]["elapsed_seconds"] == 2.5
+    assert runs[0]["timings"]["reply"]["elapsed_seconds"] == 3.75
+    assert runs[0]["timings"]["total_model_elapsed_seconds"] == 7.5
+    assert runs[0]["reference_count"] == 1
+    assert feedback == []
 
 
 def test_admin_lists_users_and_ip_usage(monkeypatch, tmp_path: Path) -> None:

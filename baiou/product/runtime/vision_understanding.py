@@ -8,10 +8,24 @@ from baiou.common.runtime_model_client import RuntimeModelClient
 from baiou.product.common import load_prompt
 
 
-def understand_images(question: str, context: str, image_paths: list[Path], models: dict[str, Any], user_id: str) -> dict[str, Any]:
+VISION_STYLE_FULL = "full"
+VISION_STYLE_DIALOGUE = "dialogue"
+
+
+def understand_images(
+    question: str,
+    context: str,
+    image_paths: list[Path],
+    models: dict[str, Any],
+    user_id: str,
+    style: str = VISION_STYLE_FULL,
+) -> dict[str, Any]:
     vision_cfg = dict(models.get("vision_model", {}))
+    style = normalize_vision_style(style)
+    if style == VISION_STYLE_DIALOGUE:
+        vision_cfg["max_tokens"] = min(int(vision_cfg.get("max_tokens", 5000)), int(vision_cfg.get("dialogue_max_tokens", 1600)))
     vision_client = RuntimeModelClient("vision_model", vision_cfg, user_id)
-    result = vision_client.chat(build_system_prompt(), build_user_prompt(question, context), image_paths)
+    result = vision_client.chat(build_system_prompt(style), build_user_prompt(question, context, style), image_paths)
     text = str(result.get("raw_text", "")).strip()
     if result.get("status") != "model_success":
         text = f"图片理解失败：{result.get('error', result.get('status', 'unknown'))}"
@@ -35,7 +49,14 @@ def dry_run_image_summary(image_paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(style: str = VISION_STYLE_FULL) -> str:
+    if normalize_vision_style(style) == VISION_STYLE_DIALOGUE:
+        return (
+            "你是新版 MVP 的聊天截图转写助手。只提取截图里可见的聊天话轮和回复定位，不做情感分析。"
+            "默认按聊天气泡位置判断说话人：左侧/白色气泡=女生或对方，右侧/绿色气泡=男生或用户；"
+            "只有用户补充背景、截图内头像/昵称/系统提示等明确证据相反时，才覆盖默认规则。"
+            "输出要短，优先保留原句，方便后续模型直接判断怎么回复。"
+        )
     return (
         "你是新版 MVP 的聊天截图理解助手，只输出可用于后续标签判断和回复建议的事实摘要。"
         "这是产品端图片理解规则：默认按聊天气泡位置判断说话人，左侧/白色气泡=女生或对方，"
@@ -45,12 +66,17 @@ def build_system_prompt() -> str:
     )
 
 
-def build_user_prompt(question: str, context: str) -> str:
-    base = load_prompt("image_understanding_v01.md")
+def build_user_prompt(question: str, context: str, style: str = VISION_STYLE_FULL) -> str:
+    prompt_name = "image_understanding_dialogue_v01.md" if normalize_vision_style(style) == VISION_STYLE_DIALOGUE else "image_understanding_v01.md"
+    base = load_prompt(prompt_name)
     parts = [base, "用户问题：", question.strip()]
     if context.strip():
         parts.extend(["补充背景：", context.strip()])
     return "\n\n".join(parts)
+
+
+def normalize_vision_style(style: str) -> str:
+    return VISION_STYLE_DIALOGUE if str(style).strip().lower() in {"dialogue", "fast", "short"} else VISION_STYLE_FULL
 
 
 def correct_vision_attribution(text: str) -> str:

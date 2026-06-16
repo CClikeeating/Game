@@ -11,7 +11,7 @@ from baiou.common.io import resolve_path, write_json
 from baiou.common.runtime_model_client import RuntimeModelClient
 from baiou.case_pipeline.knowledge.search_segments import search_segments
 from baiou.common.chat_json_client import ChatJsonClient, parse_json_content
-from baiou.product.runtime.vision_understanding import dry_run_image_summary, understand_images
+from baiou.product.runtime.vision_understanding import VISION_STYLE_DIALOGUE, VISION_STYLE_FULL, dry_run_image_summary, understand_images
 from baiou.product.common import OUTPUT_ROOT, load_config, load_prompt, timestamp_id
 
 MODE_QUALITY_LOCAL = "quality_local"
@@ -80,7 +80,7 @@ def run_reply(
     runtime_mode = normalize_mode(mode)
     user_id = resolve_user_id(models, runtime_mode)
     image_paths = [resolve_path(path) for path in (images or [])]
-    image_data = image_payload(question, context, image_paths, models, user_id, dry_run)
+    image_data = image_payload(question, context, image_paths, models, user_id, dry_run, vision_style_for_mode(models, runtime_mode))
     image_understanding = image_data.get("text", "")
     input_text = build_input_text(question, context, image_understanding)
     if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY}:
@@ -290,12 +290,22 @@ def image_payload(
     models: dict[str, Any],
     user_id: str,
     dry_run: bool,
+    vision_style: str = VISION_STYLE_FULL,
 ) -> dict[str, Any]:
     if not image_paths:
         return {"text": "", "model_result": {}}
     if dry_run:
         return dry_run_image_summary(image_paths)
-    return understand_images(question, context, image_paths, models, user_id)
+    return understand_images(question, context, image_paths, models, user_id, style=vision_style)
+
+
+def vision_style_for_mode(models: dict[str, Any], runtime_mode: str) -> str:
+    cfg = models.get("vision_model", {}) if isinstance(models.get("vision_model", {}), dict) else {}
+    if runtime_mode == MODE_BAILIAN_RAG_FAST:
+        return str(cfg.get("fast_prompt_style") or VISION_STYLE_DIALOGUE)
+    if runtime_mode == MODE_BAILIAN_RAG_QUALITY:
+        return str(cfg.get("quality_prompt_style") or VISION_STYLE_FULL)
+    return str(cfg.get("default_prompt_style") or VISION_STYLE_FULL)
 
 
 def build_input_text(question: str, context: str, image_understanding: str = "") -> str:
@@ -382,7 +392,7 @@ def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] |
                 "软锚点使用方式：",
                 "软锚点用于减少过度解读，不是保守限制。保持自然、有趣、可推进；推进空间低时降低强撩和强邀约，推进空间中/高时可以轻微升温、暧昧试探或边界内的性张力玩笑。",
                 "知识库检索要求：",
-                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。检索词优先围绕女生/对方最后一句、当前句功能、推进尺度、建议手感和关键事实；不要主动加入“废物测试/强框架/反击”等词，除非软锚点判断为明确测试或证据很强。优先学习片段里的动作和节奏，不要照搬不适合当前语境的原句。",
+                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。检索词优先围绕女生/对方最后一句、当前句功能、推进尺度、建议手感和关键事实；不要主动加入“废物测试/强框架/反击”等词，除非软锚点判断为明确测试或证据很强。当前截图事实优先于召回片段；召回片段只学习动作和节奏，不继承其强度、称呼或原句。",
                 "相似结构化案例片段：",
                 "由百炼 file_search 工具返回；如果没有命中，也要基于软锚点和原则给出自然、可推进的回复。",
             ]
@@ -391,7 +401,7 @@ def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] |
         parts.extend(
             [
                 "知识库检索要求：",
-                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。优先学习片段里的迁移学习价值、建议回复动作和风险提醒；不要照搬不适合当前语境的原句。普通撒娇、接话、解释或收尾，不要仅凭单句就主动检索为废物测试或强框架对抗。",
+                "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。当前截图事实优先于召回片段；召回片段只学习迁移动作、节奏和风险提醒，不继承其强度、称呼或原句。普通撒娇、接话、解释或收尾，不要仅凭单句就主动检索为废物测试或强框架对抗。",
                 "当前基础标签：",
                 "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
                 "相似结构化案例片段：",

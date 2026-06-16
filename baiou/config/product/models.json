@@ -83,8 +83,10 @@
     "temperature": 0.2,
     "timeout_seconds": 180,
     "max_tokens": 5000,
+    "fast_prompt_style": "dialogue",
+    "quality_prompt_style": "full",
+    "dialogue_max_tokens": 1600,
     "image_detail": "auto"
   }
 }
-
 

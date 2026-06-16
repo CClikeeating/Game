@@ -26,6 +26,21 @@ def test_product_vision_prompt_locks_speaker_attribution_contract() -> None:
     assert "female=女生/对方" in prompt
 
 
+def test_product_dialogue_vision_prompt_is_short_and_fact_only() -> None:
+    system_prompt = vision_understanding.build_system_prompt("dialogue")
+    user_prompt = vision_understanding.build_user_prompt("how reply", "", "dialogue")
+    prompt = system_prompt + "\n" + user_prompt
+
+    assert "只提取可见内容" in prompt
+    assert "不做完整情感分析" in prompt
+    assert "不生成最终回复" in prompt
+    assert "结构化可见话轮" in prompt
+    assert "女生/对方最后一句" in prompt
+    assert "男生/用户最近回复" in prompt
+    assert "当前可见局势" not in prompt
+    assert "一致性自检" not in prompt
+
+
 def test_product_reply_input_carries_image_reply_position_contract() -> None:
     input_text = build_input_text("怎么回？", "", "女生/对方最后一句：在干嘛")
 
