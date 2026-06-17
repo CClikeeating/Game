@@ -17,7 +17,14 @@ from werkzeug.utils import secure_filename
 
 from baiou.common.io import PROJECT_ROOT, load_data, resolve_path
 from baiou.product.api.web_alpha import web_alpha_page_html
-from baiou.product.runtime.reply_engine import MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY, normalize_mode, run_reply
+from baiou.product.runtime.reply_engine import (
+    MODE_BAILIAN_RAG_FAST,
+    MODE_BAILIAN_RAG_QUALITY,
+    MODE_BAILIAN_RAG_STRATEGY_FAST,
+    MODE_BAILIAN_RAG_STRATEGY_QUALITY,
+    normalize_mode,
+    run_reply,
+)
 from baiou.product.storage import ProductStore
 
 CONFIG_ROOT = PROJECT_ROOT / "baiou" / "config" / "product"
@@ -41,7 +48,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "runtime": {
         "default_mode": MODE_BAILIAN_RAG_FAST,
-        "modes": {MODE_BAILIAN_RAG_FAST: "快速模式", MODE_BAILIAN_RAG_QUALITY: "质量模式"},
+        "modes": {
+            MODE_BAILIAN_RAG_FAST: "快速模式",
+            MODE_BAILIAN_RAG_QUALITY: "质量模式",
+            MODE_BAILIAN_RAG_STRATEGY_FAST: "策略实验模式",
+            MODE_BAILIAN_RAG_STRATEGY_QUALITY: "策略质量模式",
+        },
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
     "admin": {"token": ""},
@@ -453,7 +465,12 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 500)),
         "mode_unit_costs": configured_int_map(
             os.environ.get("BAIOU_MODE_UNIT_COSTS") or limits.get("mode_unit_costs"),
-            {MODE_BAILIAN_RAG_FAST: 1, MODE_BAILIAN_RAG_QUALITY: 2},
+            {
+                MODE_BAILIAN_RAG_FAST: 1,
+                MODE_BAILIAN_RAG_QUALITY: 2,
+                MODE_BAILIAN_RAG_STRATEGY_FAST: 1,
+                MODE_BAILIAN_RAG_STRATEGY_QUALITY: 2,
+            },
         ),
         "default_mode": os.environ.get("BAIOU_REPLY_MODE") or runtime.get("default_mode", MODE_BAILIAN_RAG_FAST),
         "modes": runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"]),
@@ -747,6 +764,18 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
                 MODE_BAILIAN_RAG_QUALITY: bounded_int(
                     (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_QUALITY) if isinstance(limits.get("mode_unit_costs"), dict) else None,
                     mode_unit_cost(config, MODE_BAILIAN_RAG_QUALITY),
+                    1,
+                    100,
+                ),
+                MODE_BAILIAN_RAG_STRATEGY_FAST: bounded_int(
+                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_STRATEGY_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
+                    mode_unit_cost(config, MODE_BAILIAN_RAG_STRATEGY_FAST),
+                    1,
+                    100,
+                ),
+                MODE_BAILIAN_RAG_STRATEGY_QUALITY: bounded_int(
+                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_STRATEGY_QUALITY) if isinstance(limits.get("mode_unit_costs"), dict) else None,
+                    mode_unit_cost(config, MODE_BAILIAN_RAG_STRATEGY_QUALITY),
                     1,
                     100,
                 ),
@@ -1215,6 +1244,8 @@ def admin_page_html() -> str:
               <select name="default_mode">
                 <option value="bailian_rag_fast">百炼快速模式</option>
                 <option value="bailian_rag_quality">百炼质量模式</option>
+                <option value="bailian_rag_strategy_fast">策略实验模式</option>
+                <option value="bailian_rag_strategy_quality">策略质量模式</option>
               </select>
             </label>
             <label>百炼知识库 ID
@@ -1237,6 +1268,12 @@ def admin_page_html() -> str:
             </label>
             <label>质量模式扣费
               <input name="quality_unit_cost" type="number" min="1">
+            </label>
+            <label>策略实验扣费
+              <input name="strategy_unit_cost" type="number" min="1">
+            </label>
+            <label>策略质量扣费
+              <input name="strategy_quality_unit_cost" type="number" min="1">
             </label>
             <label>最大会话数
               <input name="max_conversations_per_user" type="number" min="1">
@@ -1383,6 +1420,8 @@ def admin_page_html() -> str:
       form.web_site_daily_quota.value = cfg.limits.web_site_daily_quota || 0;
       form.fast_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_fast || 1;
       form.quality_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_quality || 2;
+      form.strategy_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_strategy_fast || 1;
+      form.strategy_quality_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_strategy_quality || 2;
       form.max_conversations_per_user.value = cfg.limits.max_conversations_per_user || 5;
       form.history_turns_for_reply.value = cfg.limits.history_turns_for_reply || 6;
       form.max_images_per_reply.value = cfg.limits.max_images_per_reply || 3;
@@ -1488,6 +1527,8 @@ def admin_page_html() -> str:
           mode_unit_costs: {
             bailian_rag_fast: form.fast_unit_cost.value,
             bailian_rag_quality: form.quality_unit_cost.value,
+            bailian_rag_strategy_fast: form.strategy_unit_cost.value,
+            bailian_rag_strategy_quality: form.strategy_quality_unit_cost.value,
           },
           max_conversations_per_user: form.max_conversations_per_user.value,
           history_turns_for_reply: form.history_turns_for_reply.value,

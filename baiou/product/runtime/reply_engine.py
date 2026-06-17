@@ -17,6 +17,8 @@ from baiou.product.common import OUTPUT_ROOT, load_config, load_prompt, timestam
 MODE_QUALITY_LOCAL = "quality_local"
 MODE_BAILIAN_RAG_FAST = "bailian_rag_fast"
 MODE_BAILIAN_RAG_QUALITY = "bailian_rag_quality"
+MODE_BAILIAN_RAG_STRATEGY_FAST = "bailian_rag_strategy_fast"
+MODE_BAILIAN_RAG_STRATEGY_QUALITY = "bailian_rag_strategy_quality"
 
 DEFAULT_LABEL_ALIASES = {
     "聊天阶段": {
@@ -83,7 +85,7 @@ def run_reply(
     image_data = image_payload(question, context, image_paths, models, user_id, dry_run, vision_style_for_mode(models, runtime_mode))
     image_understanding = image_data.get("text", "")
     input_text = build_input_text(question, context, image_understanding)
-    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY}:
+    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY, MODE_BAILIAN_RAG_STRATEGY_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY}:
         return run_bailian_rag_fast(
             run_id,
             output_dir,
@@ -97,6 +99,8 @@ def run_reply(
             user_id,
             dry_run,
             quality_mode=runtime_mode == MODE_BAILIAN_RAG_QUALITY,
+            strategy_mode=runtime_mode == MODE_BAILIAN_RAG_STRATEGY_FAST,
+            strategy_quality_mode=runtime_mode == MODE_BAILIAN_RAG_STRATEGY_QUALITY,
         )
 
     label_prompt = build_label_prompt(input_text)
@@ -163,10 +167,21 @@ def run_bailian_rag_fast(
     user_id: str,
     dry_run: bool,
     quality_mode: bool = False,
+    strategy_mode: bool = False,
+    strategy_quality_mode: bool = False,
 ) -> dict[str, Any]:
-    mode_name = MODE_BAILIAN_RAG_QUALITY if quality_mode else MODE_BAILIAN_RAG_FAST
+    mode_name = (
+        MODE_BAILIAN_RAG_STRATEGY_QUALITY
+        if strategy_quality_mode
+        else MODE_BAILIAN_RAG_STRATEGY_FAST
+        if strategy_mode
+        else MODE_BAILIAN_RAG_QUALITY
+        if quality_mode
+        else MODE_BAILIAN_RAG_FAST
+    )
     label_result: dict[str, Any] = {}
     quality_guidance: dict[str, Any] = {}
+    strategy_guidance: dict[str, Any] = {}
     labels: dict[str, Any] = {}
     if quality_mode:
         if dry_run:
@@ -179,7 +194,23 @@ def run_bailian_rag_fast(
             labels = quality_guidance.get("labels", {}) if isinstance(quality_guidance.get("labels", {}), dict) else {}
             labels = normalize_labels(labels) if labels else heuristic_labels(input_text)
             quality_guidance["labels"] = labels
-    reply_prompt = build_bailian_rag_prompt(input_text, quality_guidance if quality_mode else None)
+    if strategy_quality_mode:
+        if dry_run:
+            labels = heuristic_labels(input_text)
+            strategy_guidance = heuristic_strategy_guidance(input_text, labels)
+        else:
+            label_client = ChatJsonClient("reply_strategy_model", strategy_label_config(models), user_id)
+            label_result = label_client.chat_json("只输出合法 JSON。", build_strategy_label_prompt(input_text))
+            strategy_guidance = normalize_strategy_guidance(label_result.get("parsed", {}), input_text)
+            labels = strategy_guidance.get("labels", {}) if isinstance(strategy_guidance.get("labels", {}), dict) else {}
+            labels = normalize_labels(labels) if labels else heuristic_labels(input_text)
+            strategy_guidance["labels"] = labels
+    reply_prompt = build_bailian_rag_prompt(
+        input_text,
+        quality_guidance if quality_mode else None,
+        strategy_mode=strategy_mode,
+        strategy_guidance=strategy_guidance if strategy_quality_mode else None,
+    )
     if dry_run:
         preview = {
             "status": "dry_run",
@@ -191,6 +222,7 @@ def run_bailian_rag_fast(
             "vision_result": image_data.get("model_result", {}),
             "labels": labels,
             "quality_guidance": quality_guidance,
+            "strategy_guidance": strategy_guidance if strategy_quality_mode else strategy_fast_guidance() if strategy_mode else {},
             "reference_segments": [],
             "label_result": label_result,
             "reply_prompt": reply_prompt,
@@ -229,6 +261,7 @@ def run_bailian_rag_fast(
         "vision_result": image_data.get("model_result", {}),
         "labels": answer.get("labels", {}),
         "quality_guidance": quality_guidance,
+        "strategy_guidance": strategy_guidance if strategy_quality_mode else strategy_fast_guidance() if strategy_mode else {},
         "reference_segments": references,
         "answer": answer,
         "label_result": compact_model_result(label_result) if label_result else {},
@@ -301,9 +334,9 @@ def image_payload(
 
 def vision_style_for_mode(models: dict[str, Any], runtime_mode: str) -> str:
     cfg = models.get("vision_model", {}) if isinstance(models.get("vision_model", {}), dict) else {}
-    if runtime_mode == MODE_BAILIAN_RAG_FAST:
+    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_FAST}:
         return str(cfg.get("fast_prompt_style") or VISION_STYLE_DIALOGUE)
-    if runtime_mode == MODE_BAILIAN_RAG_QUALITY:
+    if runtime_mode in {MODE_BAILIAN_RAG_QUALITY, MODE_BAILIAN_RAG_STRATEGY_QUALITY}:
         return str(cfg.get("quality_prompt_style") or VISION_STYLE_FULL)
     return str(cfg.get("default_prompt_style") or VISION_STYLE_FULL)
 
@@ -349,6 +382,49 @@ def build_quality_label_prompt(input_text: str) -> str:
     )
 
 
+def build_strategy_label_prompt(input_text: str) -> str:
+    principles = load_config("prompt_principles.json")
+    return "\n\n".join(
+        [
+            "你是 Baiou 策略门实验模式的轻量策略决策助手。",
+            "任务：根据当前聊天内容、截图理解和用户补充背景，先压缩状态，再选择一个回复动作策略。只输出合法 JSON，不要 Markdown。",
+            "关键边界：策略是动作，不是关系结论；不要判断她喜不喜欢，只判断这一句该轻承接、推进、撤退、试探、转移还是提醒风险。",
+            "RAG 后续只会做表达参考，所以你必须独立给出策略；不要依赖案例来决定局势。",
+            "策略枚举：轻承接、轻推进、轻撤退、暧昧试探、高张力推进、转移话题、风险提醒。",
+            "高张力推进边界：只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
+            "状态字段枚举：关系阶段=刚认识/破冰期/熟悉期/暧昧升温期/高意向推进期；对方投入度=低/中/高；当前压力=低/中/高；互动活跃度=低/中/高。",
+            "原则：",
+            json.dumps(principles, ensure_ascii=False, indent=2),
+            "输出结构：",
+            json.dumps(
+                {
+                    "state": {"关系阶段": "", "对方投入度": "", "当前压力": "", "互动活跃度": ""},
+                    "strategy": "",
+                    "reason": "一句话理由",
+                    "risk_level": "低/中/高",
+                    "forbid": ["不要做的动作"],
+                    "style_hint": "自然/松弛/俏皮/暧昧但不油/有边界地推进/降压",
+                    "labels": {
+                        "聊天阶段": "",
+                        "接触状态": "",
+                        "关系推进目标": "",
+                        "女生状态": "",
+                        "男生目标": "",
+                        "推荐策略": "",
+                        "风险类型": [],
+                        "回复强度": "",
+                        "高热度信号": "",
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "当前输入：",
+            input_text,
+        ]
+    )
+
+
 def prompt_taxonomy_config(taxonomy: dict[str, Any]) -> dict[str, Any]:
     output = {"labels": taxonomy.get("labels", {})}
     heat_signals = taxonomy.get("heat_signals", [])
@@ -375,7 +451,12 @@ def build_reply_prompt(input_text: str, labels: dict[str, Any], references: list
     )
 
 
-def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] | None = None) -> str:
+def build_bailian_rag_prompt(
+    input_text: str,
+    quality_guidance: dict[str, Any] | None = None,
+    strategy_mode: bool = False,
+    strategy_guidance: dict[str, Any] | None = None,
+) -> str:
     principles = load_config("prompt_principles.json")
     parts = [
         load_prompt("reply_generate_v01.md"),
@@ -397,6 +478,40 @@ def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] |
                 "由百炼 file_search 工具返回；如果没有命中，也要基于软锚点和原则给出自然、可推进的回复。",
             ]
         )
+    elif strategy_guidance:
+        parts.extend(
+            [
+                "策略门决策结果：",
+                json.dumps(strategy_guidance, ensure_ascii=False, indent=2),
+                "策略门工作方式：",
+                "上面的 strategy 是唯一决策点。你必须按该策略生成回复；百炼 file_search 只用于找表达参考、说法节奏和人味，不得反向改变策略、不继承案例强度、不照搬称呼或原句。",
+                "知识库检索要求：",
+                "检索词优先围绕女生/对方最后一句、策略、style_hint、forbid 和关键事实。当前截图事实和策略门决策优先于召回片段；没有命中也要按策略生成一句自然可发的回复。",
+                "输出要求：",
+                "最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；coach_analysis 简短说明策略即可，不要输出长报告。",
+                "相似结构化案例片段：",
+                "由百炼 file_search 工具返回；只作为表达参考。",
+            ]
+        )
+    elif strategy_mode:
+        parts.extend(
+            [
+                "策略门实验要求：",
+                json.dumps(strategy_fast_guidance(), ensure_ascii=False, indent=2),
+                "策略门工作方式：",
+                "先在内部完成状态压缩和策略选择，再使用百炼 file_search 从 baiou 片段知识库中检索表达参考。策略是唯一决策点，召回片段只学习说法、节奏和人味，不决定局势、不继承强度、不照搬称呼或原句。",
+                "策略选择边界：",
+                "低信息、冷淡、防御、拒绝时优先轻承接、轻撤退、转移话题或风险提醒；女生正常/热情且有承接时可以轻推进、轻微调侃或暧昧试探；只有上下文已有玩笑空间、暧昧承接或高投入时，才允许高张力推进。",
+                "知识库检索要求：",
+                "检索词优先围绕女生/对方最后一句、当前句功能、内部选择的策略、建议手感和关键事实；不要让召回片段反向改变策略。当前截图事实优先于召回片段；没有命中也要按策略生成一句自然可发的回复。",
+                "当前基础标签：",
+                "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
+                "输出要求：",
+                "最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；coach_analysis 可以简短说明内部策略，但不要输出长报告。",
+                "相似结构化案例片段：",
+                "由百炼 file_search 工具返回；只作为表达参考。",
+            ]
+        )
     else:
         parts.extend(
             [
@@ -411,6 +526,71 @@ def build_bailian_rag_prompt(input_text: str, quality_guidance: dict[str, Any] |
     return "\n\n".join(parts)
 
 
+def strategy_fast_guidance() -> dict[str, Any]:
+    return {
+        "mode": MODE_BAILIAN_RAG_STRATEGY_FAST,
+        "decision_rule": "策略优先；RAG 只做表达参考。",
+        "strategies": ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
+        "aggressive_strategy": {
+            "name": "高张力推进",
+            "boundary": "只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
+        },
+    }
+
+
+def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return heuristic_strategy_guidance(input_text, heuristic_labels(input_text))
+    labels = extract_labels(parsed)
+    state = parsed.get("state", {}) if isinstance(parsed.get("state", {}), dict) else {}
+    strategy = normalize_choice(
+        parsed.get("strategy"),
+        ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
+    )
+    output = {
+        "state": {
+            "关系阶段": normalize_choice(state.get("关系阶段"), ["刚认识", "破冰期", "熟悉期", "暧昧升温期", "高意向推进期"]),
+            "对方投入度": normalize_choice(state.get("对方投入度"), ["低", "中", "高"]),
+            "当前压力": normalize_choice(state.get("当前压力"), ["低", "中", "高"]),
+            "互动活跃度": normalize_choice(state.get("互动活跃度"), ["低", "中", "高"]),
+        },
+        "strategy": strategy or "轻承接",
+        "reason": str(parsed.get("reason", "")).strip(),
+        "risk_level": normalize_choice(parsed.get("risk_level"), ["低", "中", "高"]) or "低",
+        "forbid": [str(item).strip() for item in parsed.get("forbid", []) if str(item).strip()] if isinstance(parsed.get("forbid", []), list) else [],
+        "style_hint": normalize_choice(parsed.get("style_hint"), ["自然", "松弛", "俏皮", "暧昧但不油", "有边界地推进", "降压"]),
+        "labels": labels,
+    }
+    output["state"] = {key: value for key, value in output["state"].items() if value}
+    return {key: value for key, value in output.items() if value not in ("", [], {})}
+
+
+def heuristic_strategy_guidance(text: str, labels: dict[str, Any]) -> dict[str, Any]:
+    female_state = labels.get("女生状态", "")
+    if female_state in {"冷淡", "防御", "拒绝"}:
+        strategy, pressure, style, forbid = "轻撤退", "高", "降压", ["强撩", "连续追问", "强邀约"]
+    elif any(word in text for word in ["想你", "想和你聊", "喜欢", "宝宝", "礼物"]):
+        strategy, pressure, style, forbid = "暧昧试探", "低", "暧昧但不油", ["长篇解释", "过度讨好"]
+    elif any(word in text for word in ["嗯嗯", "好的", "知道啦"]):
+        strategy, pressure, style, forbid = "轻撤退", "中", "自然", ["强行暧昧", "连续追问"]
+    else:
+        strategy, pressure, style, forbid = "轻承接", "低", "松弛", ["查户口", "长篇大论"]
+    return {
+        "state": {
+            "关系阶段": labels.get("聊天阶段", "熟悉期"),
+            "对方投入度": "低" if female_state in {"冷淡", "低投入", "拒绝"} else "中",
+            "当前压力": pressure,
+            "互动活跃度": "中",
+        },
+        "strategy": strategy,
+        "reason": "dry-run 启发式策略判断。",
+        "risk_level": "中" if pressure == "高" else "低",
+        "forbid": forbid,
+        "style_hint": style,
+        "labels": labels,
+    }
+
+
 def normalize_mode(value: str | None) -> str:
     mode = str(value or "").strip().lower()
     if not mode:
@@ -423,9 +603,20 @@ def normalize_mode(value: str | None) -> str:
         "rag_fast": MODE_BAILIAN_RAG_FAST,
         "rag_quality": MODE_BAILIAN_RAG_QUALITY,
         "bailian_quality": MODE_BAILIAN_RAG_QUALITY,
+        "strategy": MODE_BAILIAN_RAG_STRATEGY_FAST,
+        "strategy_fast": MODE_BAILIAN_RAG_STRATEGY_FAST,
+        "rag_strategy": MODE_BAILIAN_RAG_STRATEGY_FAST,
+        "bailian_strategy": MODE_BAILIAN_RAG_STRATEGY_FAST,
+        "strategy_quality": MODE_BAILIAN_RAG_STRATEGY_QUALITY,
+        "rag_strategy_quality": MODE_BAILIAN_RAG_STRATEGY_QUALITY,
+        "bailian_strategy_quality": MODE_BAILIAN_RAG_STRATEGY_QUALITY,
     }
     mode = aliases.get(mode, mode)
-    return mode if mode in {MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY} else MODE_QUALITY_LOCAL
+    return (
+        mode
+        if mode in {MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY, MODE_BAILIAN_RAG_STRATEGY_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY}
+        else MODE_QUALITY_LOCAL
+    )
 
 
 def resolve_user_id(models: dict[str, Any], mode: str) -> str:
@@ -453,6 +644,13 @@ def quality_label_config(models: dict[str, Any]) -> dict[str, Any]:
     cfg["enable_thinking"] = False
     cfg["response_format_json"] = True
     return cfg
+
+
+def strategy_label_config(models: dict[str, Any]) -> dict[str, Any]:
+    configured = models.get("reply_strategy_model")
+    if isinstance(configured, dict) and configured:
+        return configured
+    return quality_label_config(models)
 
 
 def bailian_rag_config(models: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -771,7 +969,10 @@ def main() -> None:
     parser.add_argument("--index-path")
     parser.add_argument("--batch-id", default="reply_runs")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--mode", choices=[MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY])
+    parser.add_argument(
+        "--mode",
+        choices=[MODE_QUALITY_LOCAL, MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_QUALITY, MODE_BAILIAN_RAG_STRATEGY_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY],
+    )
     args = parser.parse_args()
     output = json.dumps(
         run_reply(args.question, args.context, args.image, args.index_path, args.batch_id, args.dry_run, args.mode),

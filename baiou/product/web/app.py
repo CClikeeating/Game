@@ -25,6 +25,8 @@ DEFAULT_CONFIG = {
             "quality_local": "质量模式：本地标签检索",
             "bailian_rag_fast": "百炼 RAG 快速模式",
             "bailian_rag_quality": "百炼 RAG 质量模式：轻量局势标签 + 知识库",
+            "bailian_rag_strategy_fast": "策略实验模式：策略优先 + RAG 表达参考",
+            "bailian_rag_strategy_quality": "策略质量模式：显式策略决策 + RAG 表达参考",
         },
     },
 }
@@ -283,6 +285,4 @@ app = create_app()
 if __name__ == "__main__":
     cfg = load_web_config()
     app.run(host=cfg["host"], port=cfg["port"], debug=cfg["debug"], use_reloader=False)
-
-
 
