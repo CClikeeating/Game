@@ -241,6 +241,8 @@ PAGE = """<!doctype html>
               <div class="mode-row">
                 <button class="mode active" type="button" data-mode="bailian_rag_fast">快速<small>日常够用</small></button>
                 <button class="mode" type="button" data-mode="bailian_rag_quality">质量<small>会更慢，消耗 2 次额度</small></button>
+                <button class="mode" type="button" data-mode="bailian_rag_strategy_fast">策略<small>实验模式，速度接近快速</small></button>
+                <button class="mode" type="button" data-mode="bailian_rag_strategy_quality">策略质量<small>显式策略，消耗 2 次额度</small></button>
               </div>
             </div>
             <div class="actions">
@@ -311,7 +313,17 @@ PAGE = """<!doctype html>
       const costs = state.limits.mode_unit_costs || {};
       const mode = state.entry === "text_only" ? "bailian_rag_fast" : state.mode;
       const cost = costs[mode] || 1;
-      $("#modeCost").textContent = state.entry === "text_only" ? `文字极速，本次消耗 ${cost}` : state.mode === "bailian_rag_quality" ? `质量模式：更慢，消耗 ${cost} 次额度` : `本次消耗 ${cost}`;
+      if (state.entry === "text_only") {
+        $("#modeCost").textContent = `文字极速，本次消耗 ${cost}`;
+      } else if (state.mode === "bailian_rag_quality") {
+        $("#modeCost").textContent = `质量模式：更慢，消耗 ${cost} 次额度`;
+      } else if (state.mode === "bailian_rag_strategy_fast") {
+        $("#modeCost").textContent = `策略实验：消耗 ${cost} 次额度`;
+      } else if (state.mode === "bailian_rag_strategy_quality") {
+        $("#modeCost").textContent = `策略质量：更慢，消耗 ${cost} 次额度`;
+      } else {
+        $("#modeCost").textContent = `本次消耗 ${cost}`;
+      }
     }
     function selectedFiles() {
       return Array.from($("#images").files || []);

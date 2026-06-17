@@ -2,7 +2,9 @@
   "user_id": "71",
   "user_ids": {
     "default": "71",
-    "bailian_rag_quality": "72"
+    "bailian_rag_quality": "72",
+    "bailian_rag_strategy_fast": "71",
+    "bailian_rag_strategy_quality": "72"
   },
   "case_primary": {
     "enabled": true,
@@ -53,6 +55,19 @@
     "enable_thinking": false,
     "response_format_json": true
   },
+  "reply_strategy_model": {
+    "enabled": true,
+    "provider": "qwen_dashscope",
+    "api_style": "openai_compatible_chat",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-plus",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "temperature": 0,
+    "timeout_seconds": 180,
+    "max_tokens": 1200,
+    "enable_thinking": false,
+    "response_format_json": true
+  },
   "reply_rag_model": {
     "enabled": true,
     "provider": "qwen_dashscope",
@@ -89,4 +104,3 @@
     "image_detail": "auto"
   }
 }
-

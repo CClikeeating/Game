@@ -34,6 +34,8 @@ def test_baiou_web_default_mode_is_bailian_rag_fast(monkeypatch, tmp_path: Path)
     assert config["default_mode"] == "bailian_rag_fast"
     assert "quality_local" in config["modes"]
     assert "bailian_rag_quality" in config["modes"]
+    assert "bailian_rag_strategy_fast" in config["modes"]
+    assert "bailian_rag_strategy_quality" in config["modes"]
 
 
 def test_baiou_web_run_uses_product_runtime(monkeypatch, tmp_path: Path) -> None:

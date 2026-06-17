@@ -141,6 +141,10 @@ def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch
     assert "正在生成回复" in html
     assert "已等待" in html
     assert "会更慢，消耗 2 次额度" in html
+    assert "策略实验模式" in html
+    assert "速度接近快速" in html
+    assert "策略质量" in html
+    assert "显式策略" in html
     assert "test-code" not in html
     assert denied.status_code == 401
     assert dev_login.status_code == 401
@@ -540,7 +544,13 @@ def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) ->
         json={
             "runtime": {"default_mode": "bailian_rag_quality"},
             "rag": {"vector_store_ids": "new_store", "max_num_results": 4},
-            "limits": {"daily_reply_quota": 33, "max_images_per_reply": 4, "min_images_per_reply": 1, "max_image_mb": 9},
+            "limits": {
+                "daily_reply_quota": 33,
+                "mode_unit_costs": {"bailian_rag_strategy_fast": 2, "bailian_rag_strategy_quality": 3},
+                "max_images_per_reply": 4,
+                "min_images_per_reply": 1,
+                "max_image_mb": 9,
+            },
             "retention": {"upload_days": 30, "run_days": 45},
             "announcement": {"title": "notice", "content": "hello", "status": "active"},
         },
@@ -555,6 +565,8 @@ def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) ->
     assert current["rag"]["vector_store_ids"] == ["new_store"]
     assert current["rag"]["max_num_results"] == 4
     assert current["limits"]["daily_reply_quota"] == 33
+    assert current["limits"]["mode_unit_costs"]["bailian_rag_strategy_fast"] == 2
+    assert current["limits"]["mode_unit_costs"]["bailian_rag_strategy_quality"] == 3
     assert current["retention"]["run_days"] == 45
     assert current["announcement"]["title"] == "notice"
     assert health["default_mode"] == "bailian_rag_quality"

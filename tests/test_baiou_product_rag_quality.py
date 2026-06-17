@@ -3,8 +3,11 @@ import json
 from baiou.product.runtime.reply_engine import (
     MODE_BAILIAN_RAG_FAST,
     MODE_BAILIAN_RAG_QUALITY,
+    MODE_BAILIAN_RAG_STRATEGY_FAST,
+    MODE_BAILIAN_RAG_STRATEGY_QUALITY,
     bailian_rag_config,
     build_bailian_rag_prompt,
+    build_strategy_label_prompt,
     build_quality_label_prompt,
     normalize_mode,
     normalize_quality_guidance,
@@ -24,6 +27,24 @@ def test_bailian_rag_quality_mode_and_user_id_are_configurable(monkeypatch) -> N
 
     monkeypatch.setenv("BAIOU_PRODUCT_USER_ID_BAILIAN_RAG_QUALITY", "88")
     assert resolve_user_id(models, MODE_BAILIAN_RAG_QUALITY) == "88"
+
+
+def test_bailian_rag_strategy_fast_is_configurable_without_replacing_existing_modes(monkeypatch) -> None:
+    models = {
+        "user_id": "71",
+        "user_ids": {"default": "71", MODE_BAILIAN_RAG_STRATEGY_FAST: "73"},
+    }
+
+    assert normalize_mode("strategy_fast") == MODE_BAILIAN_RAG_STRATEGY_FAST
+    assert normalize_mode("bailian_rag_strategy_fast") == MODE_BAILIAN_RAG_STRATEGY_FAST
+    assert normalize_mode("strategy_quality") == MODE_BAILIAN_RAG_STRATEGY_QUALITY
+    assert normalize_mode("bailian_rag_strategy_quality") == MODE_BAILIAN_RAG_STRATEGY_QUALITY
+    assert normalize_mode("rag_fast") == MODE_BAILIAN_RAG_FAST
+    assert normalize_mode("rag_quality") == MODE_BAILIAN_RAG_QUALITY
+    assert resolve_user_id(models, MODE_BAILIAN_RAG_STRATEGY_FAST) == "73"
+
+    monkeypatch.setenv("BAIOU_PRODUCT_USER_ID_BAILIAN_RAG_STRATEGY_FAST", "89")
+    assert resolve_user_id(models, MODE_BAILIAN_RAG_STRATEGY_FAST) == "89"
 
 
 def test_bailian_rag_max_num_results_is_configurable(monkeypatch) -> None:
@@ -50,7 +71,9 @@ def test_fast_mode_uses_short_vision_prompt_but_quality_keeps_full_prompt() -> N
     models = {"vision_model": {}}
 
     assert vision_style_for_mode(models, MODE_BAILIAN_RAG_FAST) == "dialogue"
+    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_STRATEGY_FAST) == "dialogue"
     assert vision_style_for_mode(models, MODE_BAILIAN_RAG_QUALITY) == "full"
+    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_STRATEGY_QUALITY) == "full"
 
 
 def test_admin_config_overrides_rag_file_search(monkeypatch, tmp_path) -> None:
@@ -121,6 +144,41 @@ def test_bailian_quality_prompt_uses_soft_anchor_without_overconstraining() -> N
     assert "少用“奖励你”“给你机会”“乖”等训导感词" in prompt
     assert "女生只回复“嗯嗯/好/好的/知道啦”等低信息量承接" in prompt
     assert "不要强行解读为暧昧、口是心非、怕你担心" in prompt
+
+
+def test_strategy_fast_prompt_keeps_rag_as_expression_reference() -> None:
+    prompt = build_bailian_rag_prompt("用户问题：\n我该怎么回", strategy_mode=True)
+
+    assert "策略门实验要求" in prompt
+    assert "策略是唯一决策点" in prompt
+    assert "召回片段只学习说法、节奏和人味" in prompt
+    assert "不要让召回片段反向改变策略" in prompt
+    assert "高张力推进" in prompt
+    assert "只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用" in prompt
+    assert "最终 reply 只能是一句中文短回复" in prompt
+
+
+def test_strategy_quality_prompt_uses_explicit_strategy_as_decision_point() -> None:
+    strategy_prompt = build_strategy_label_prompt("用户问题：\n我该怎么回")
+    reply_prompt = build_bailian_rag_prompt(
+        "用户问题：\n我该怎么回",
+        strategy_guidance={
+            "state": {"关系阶段": "熟悉期", "对方投入度": "中", "当前压力": "低", "互动活跃度": "中"},
+            "strategy": "暧昧试探",
+            "reason": "对方有承接，可以轻微升温。",
+            "risk_level": "低",
+            "forbid": ["长篇解释"],
+            "style_hint": "暧昧但不油",
+        },
+    )
+
+    assert "策略是动作，不是关系结论" in strategy_prompt
+    assert "不要依赖案例来决定局势" in strategy_prompt
+    assert "高张力推进边界" in strategy_prompt
+    assert "策略门决策结果" in reply_prompt
+    assert "上面的 strategy 是唯一决策点" in reply_prompt
+    assert "不得反向改变策略" in reply_prompt
+    assert "最终 reply 只能是一句中文短回复" in reply_prompt
 
 
 def test_quality_label_prompt_does_not_overread_low_information_acknowledgement() -> None:
