@@ -331,6 +331,8 @@ class ProductStore:
 
     def update_reply_run(self, user_id: str, run_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
         answer = result.get("answer", {}) if isinstance(result.get("answer", {}), dict) else {}
+        if result.get("input_type"):
+            answer = {**answer, "_input_type": str(result.get("input_type", ""))}
         answer = {**answer, "_timings": model_timings_from_result(result)}
         references = result.get("reference_segments", [])
         if not isinstance(references, list):

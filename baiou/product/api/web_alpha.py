@@ -69,6 +69,8 @@ PAGE = """<!doctype html>
     button:disabled { opacity: .55; cursor: not-allowed; }
     button.mode { background: #fff; color: var(--muted); border: 1px solid var(--line); }
     button.mode.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+    button.entry { background: #fff; color: var(--muted); border: 1px solid var(--line); }
+    button.entry.active { background: var(--accent); color: #fff; border-color: var(--accent); }
     button.ghost { background: #fff; color: var(--accent); border: 1px solid #b8d6ce; }
     .shell { width: min(1080px, 100%); margin: 0 auto; padding: 12px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -127,6 +129,8 @@ PAGE = """<!doctype html>
     .privacy { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .mode-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .mode small { display: block; margin-top: 2px; font-weight: 600; opacity: .78; }
+    .entry-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .entry small { display: block; margin-top: 2px; font-weight: 600; opacity: .78; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .dry { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
     .status { min-height: 21px; color: var(--muted); font-size: 13px; }
@@ -206,6 +210,13 @@ PAGE = """<!doctype html>
           </div>
           <div class="panel-body">
             <div class="field">
+              <div class="label">输入方式</div>
+              <div class="entry-row">
+                <button class="entry active" type="button" data-entry="text_only">文字极速<small>只填女生上一句话</small></button>
+                <button class="entry" type="button" data-entry="screenshot">截图回复<small>上传聊天截图</small></button>
+              </div>
+            </div>
+            <div class="field">
               <label for="images">聊天截图</label>
               <div class="upload">
                 <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
@@ -255,6 +266,7 @@ PAGE = """<!doctype html>
       token: localStorage.getItem("baiou_web_token") || "",
       conversation: null,
       mode: boot.defaultMode || "bailian_rag_fast",
+      entry: "text_only",
       lastRun: null,
       limits: boot.limits || {},
       uploadError: "",
@@ -297,13 +309,15 @@ PAGE = """<!doctype html>
     }
     function updateModeCost() {
       const costs = state.limits.mode_unit_costs || {};
-      const cost = costs[state.mode] || 1;
-      $("#modeCost").textContent = state.mode === "bailian_rag_quality" ? `质量模式：更慢，消耗 ${cost} 次额度` : `本次消耗 ${cost}`;
+      const mode = state.entry === "text_only" ? "bailian_rag_fast" : state.mode;
+      const cost = costs[mode] || 1;
+      $("#modeCost").textContent = state.entry === "text_only" ? `文字极速，本次消耗 ${cost}` : state.mode === "bailian_rag_quality" ? `质量模式：更慢，消耗 ${cost} 次额度` : `本次消耗 ${cost}`;
     }
     function selectedFiles() {
       return Array.from($("#images").files || []);
     }
     function validateSelectedImages() {
+      if (state.entry === "text_only") return "";
       const files = selectedFiles();
       const maxImages = state.limits.max_images_per_reply || 3;
       const maxBytes = (state.limits.max_image_mb || 8) * 1024 * 1024;
@@ -319,6 +333,13 @@ PAGE = """<!doctype html>
     function renderUploadState() {
       const files = selectedFiles();
       const maxImages = state.limits.max_images_per_reply || 3;
+      if (state.entry === "text_only") {
+        $("#uploadCount").textContent = "文字极速无需上传截图";
+        $("#fileList").innerHTML = '<span class="file-chip">直接填写女生上一句话或当前聊天文本</span>';
+        $("#uploadError").textContent = "";
+        $("#uploadError").classList.add("hidden");
+        return;
+      }
       $("#uploadCount").textContent = `已选择 ${files.length} 张 / 最多 ${maxImages} 张`;
       $("#fileList").innerHTML = files.length
         ? files.map(file => `<span class="file-chip">${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>`).join("")
@@ -367,6 +388,17 @@ PAGE = """<!doctype html>
       document.querySelectorAll("button.mode").forEach(button => button.classList.toggle("active", button.dataset.mode === mode));
       updateModeCost();
     }
+    function selectEntry(entry) {
+      state.entry = entry === "screenshot" ? "screenshot" : "text_only";
+      document.querySelectorAll("button.entry").forEach(button => button.classList.toggle("active", button.dataset.entry === state.entry));
+      const textOnly = state.entry === "text_only";
+      $("#images").disabled = textOnly;
+      document.querySelectorAll("button.mode").forEach(button => button.disabled = textOnly);
+      if (textOnly) selectMode("bailian_rag_fast");
+      updateModeCost();
+      renderUploadState();
+      setStatus("#workStatus", textOnly ? "填写女生上一句话或当前聊天文本即可生成。" : "");
+    }
     async function ensureConversation() {
       if (state.conversation && state.conversation.conversation_id) return state.conversation;
       const convs = await api("/api/v1/conversations");
@@ -382,15 +414,16 @@ PAGE = """<!doctype html>
       const files = selectedFiles();
       const maxImages = state.limits.max_images_per_reply || 3;
       if (!$("#question").value.trim()) throw new Error("请填写要回复的问题。");
-      if (files.length < (state.limits.min_images_per_reply || 1)) throw new Error("请上传聊天截图。");
+      if (state.entry !== "text_only" && files.length < (state.limits.min_images_per_reply || 1)) throw new Error("请上传聊天截图。");
       if (files.length > maxImages) throw new Error(`一次最多上传 ${maxImages} 张截图。`);
       const form = new FormData();
       form.append("conversation_id", conversation.conversation_id);
       form.append("question", $("#question").value.trim());
       form.append("context", $("#context").value.trim());
-      form.append("mode", state.mode);
+      form.append("mode", state.entry === "text_only" ? "bailian_rag_fast" : state.mode);
+      form.append("input_type", state.entry);
       if ($("#dryRun").checked) form.append("dry_run", "true");
-      files.forEach(file => form.append("images", file));
+      if (state.entry !== "text_only") files.forEach(file => form.append("images", file));
       $("#generateBtn").disabled = true;
       startWaitingTimer();
       try {
@@ -417,11 +450,11 @@ PAGE = """<!doctype html>
     function startWaitingTimer() {
       stopWaitingTimer();
       state.waitingStartedAt = Date.now();
-      state.waitingPhase = "正在理解截图";
+      state.waitingPhase = state.entry === "text_only" ? "正在生成回复" : "正在理解截图";
       updateWaitingStatus();
       state.waitingTimer = setInterval(() => {
         const seconds = Math.floor((Date.now() - state.waitingStartedAt) / 1000);
-        state.waitingPhase = seconds >= 8 ? "正在生成回复" : "正在理解截图";
+        state.waitingPhase = state.entry === "text_only" || seconds >= 8 ? "正在生成回复" : "正在理解截图";
         updateWaitingStatus();
       }, 1000);
     }
@@ -485,8 +518,10 @@ PAGE = """<!doctype html>
       else setStatus("#workStatus", selectedFiles().length ? "图片已选择，可以生成。" : "");
     });
     $("#generateBtn").addEventListener("click", () => generate().catch(error => setStatus("#workStatus", error.message, true)));
+    document.querySelectorAll("button.entry").forEach(button => button.addEventListener("click", () => selectEntry(button.dataset.entry)));
     document.querySelectorAll("button.mode").forEach(button => button.addEventListener("click", () => selectMode(button.dataset.mode)));
     selectMode(state.mode);
+    selectEntry(state.entry);
     updateLimits(boot.limits);
     loadSession();
   </script>

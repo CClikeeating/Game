@@ -130,6 +130,9 @@ def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch
     anonymous = client.get("/api/v1/me")
 
     assert "Baiou" in html
+    assert "文字极速" in html
+    assert "截图回复" in html
+    assert "input_type" in html
     assert "截图理解" not in html
     assert "参考片段" not in html
     assert "已选择 0 张 / 最多 3 张" in html
@@ -279,6 +282,57 @@ def test_reply_requires_image_when_configured(monkeypatch, tmp_path: Path) -> No
     assert captured == []
 
 
+def test_text_only_reply_allows_no_image_and_forces_fast_mode(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        min_images_per_reply=1,
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+    )
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    response = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        json={
+            "conversation_id": conv,
+            "question": "女生说：刚到家，有点累",
+            "mode": "bailian_rag_quality",
+            "input_type": "text_only",
+        },
+    )
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert captured[-1]["images"] == []
+    assert captured[-1]["mode"] == "bailian_rag_fast"
+    assert data["reply_run"]["input_type"] == "text_only"
+    assert data["reply_run"]["image_count"] == 0
+    assert data["limits"]["daily_reply_remaining"] == 9
+
+
+def test_text_only_reply_rejects_images_to_keep_entry_unambiguous(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, min_images_per_reply=1)
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+
+    response = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        data={
+            "conversation_id": conv,
+            "question": "女生说：刚到家",
+            "input_type": "text_only",
+            "images": (BytesIO(b"image-bytes"), "chat.jpg"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "text_only_images_not_allowed"
+    assert captured == []
+
+
 def test_feedback_binds_to_reply_without_exposing_internal_paths(monkeypatch, tmp_path: Path) -> None:
     client, _captured = client_with_runtime(monkeypatch, tmp_path)
     conv = login_and_default_conversation(client)
@@ -345,11 +399,13 @@ def test_admin_reply_runs_include_segmented_model_timings(monkeypatch, tmp_path:
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
 
-    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello"})
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello", "input_type": "text_only"})
     runs = client.get("/api/v1/admin/reply-runs", headers=admin_headers()).get_json()["reply_runs"]
     feedback = client.get("/api/v1/admin/feedback", headers=admin_headers()).get_json()["feedback"]
 
     assert response.status_code == 200
+    assert runs[0]["input_type"] == "text_only"
+    assert runs[0]["image_count"] == 0
     assert runs[0]["timings"]["vision"]["elapsed_seconds"] == 1.25
     assert runs[0]["timings"]["label"]["elapsed_seconds"] == 2.5
     assert runs[0]["timings"]["reply"]["elapsed_seconds"] == 3.75

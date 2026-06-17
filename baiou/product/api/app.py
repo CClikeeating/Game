@@ -179,7 +179,8 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if not question:
             return fail("question_required", "请输入要回复的内容。", 400)
         dry_run = parse_bool(form.get("dry_run"))
-        mode = normalize_api_mode(str(form.get("mode", "") or config["default_mode"]), config)
+        input_type = normalize_reply_input_type(form)
+        mode = MODE_BAILIAN_RAG_FAST if input_type == "text_only" else normalize_api_mode(str(form.get("mode", "") or config["default_mode"]), config)
         unit_cost = mode_unit_cost(config, mode)
         if not dry_run:
             quota_error = reply_quota_error(store, config, user_id, unit_cost)
@@ -194,26 +195,32 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         staged_uploads = store.get_uploads(user_id, upload_ids)
         if len(staged_uploads) != len(upload_ids):
             return fail("upload_not_found", "截图上传记录不存在或已经使用。", 404)
-        if len(files) + len(staged_uploads) > int(config["max_images_per_reply"]):
+        image_count = len(files) + len(staged_uploads)
+        if input_type == "text_only" and image_count:
+            return fail("text_only_images_not_allowed", "文本极速入口不需要上传截图。", 400)
+        if image_count > int(config["max_images_per_reply"]):
             return fail("too_many_images", f"一次最多上传 {config['max_images_per_reply']} 张截图。", 400)
-        if len(files) + len(staged_uploads) < int(config["min_images_per_reply"]):
+        if input_type != "text_only" and image_count < int(config["min_images_per_reply"]):
             return fail("image_required", "请上传聊天截图。", 400)
         user_context = str(form.get("context", "")).strip()
         history = store.recent_reply_runs(user_id, conversation_id, int(config["history_turns_for_reply"]))
         runtime_context = build_runtime_context(conversation, history, user_context)
-        image_count = len(files) + len(staged_uploads)
         run_record = store.create_reply_run(user_id, conversation_id, mode, question, user_context, runtime_context, image_count)
         image_paths = [Path(item["path"]) for item in staged_uploads]
         image_paths.extend(save_images(files, resolve_path(config["upload_root"]) / run_record["run_id"], config))
+        runtime_question = text_only_runtime_question(question) if input_type == "text_only" else question
+        if input_type == "text_only":
+            runtime_context = text_only_runtime_context(runtime_context)
         try:
             result = run_reply(
-                question=question,
+                question=runtime_question,
                 context=runtime_context,
                 images=[str(path) for path in image_paths],
                 batch_id=f"miniprogram_{run_record['run_id']}",
                 dry_run=dry_run,
                 mode=mode,
             )
+            result["input_type"] = input_type
             saved = store.update_reply_run(user_id, run_record["run_id"], result) or run_record
             store.mark_uploads_consumed(user_id, upload_ids)
             if not dry_run:
@@ -833,6 +840,25 @@ def build_runtime_context(conversation: dict[str, Any], history: list[dict[str, 
     return "\n\n".join(parts)
 
 
+def text_only_runtime_question(question: str) -> str:
+    return "\n".join(
+        [
+            "文本极速入口：用户没有上传截图，下面就是女生/对方上一句话或当前聊天文本。",
+            f"女生/对方文本：{question.strip()}",
+            "任务：只基于这句话和补充背景，生成一句男生可以直接发送的回复。",
+        ]
+    )
+
+
+def text_only_runtime_context(context: str) -> str:
+    hint = (
+        "文本极速规则：没有截图理解；女生/对方文本优先级最高。"
+        "知识库召回只参考动作和节奏，不继承召回片段原句、称呼或强度；"
+        "如果只有一句话，保持自然短回复，不要过度打标签或过度解读。"
+    )
+    return "\n\n".join([hint, context.strip()]) if context.strip() else hint
+
+
 def validate_images(files: list[FileStorage], config: dict[str, Any]) -> tuple[str, str] | None:
     files = [item for item in files if item and item.filename]
     if len(files) > int(config["max_images_per_reply"]):
@@ -985,6 +1011,8 @@ def public_reply_run(item: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         "conversation_id": item.get("conversation_id", ""),
         "mode": item.get("mode", ""),
         "display_mode": config["modes"].get(item.get("mode", ""), item.get("mode", "")),
+        "input_type": reply_run_input_type(item),
+        "image_count": item.get("image_count", 0),
         "status": item.get("status", ""),
         "answer": {
             "reply": answer.get("reply", ""),
@@ -1019,6 +1047,7 @@ def public_admin_reply_run_row(item: dict[str, Any], config: dict[str, Any]) -> 
         "conversation_id": item.get("conversation_id", ""),
         "mode": item.get("mode", ""),
         "display_mode": config["modes"].get(item.get("mode", ""), item.get("mode", "")),
+        "input_type": reply_run_input_type(item),
         "status": item.get("status", ""),
         "question": item.get("question", ""),
         "image_count": item.get("image_count", 0),
@@ -1034,6 +1063,14 @@ def admin_timings(answer: Any) -> dict[str, Any]:
         return {}
     timings = answer.get("_timings", {})
     return timings if isinstance(timings, dict) else {}
+
+
+def reply_run_input_type(item: dict[str, Any]) -> str:
+    answer = item.get("answer", {}) if isinstance(item.get("answer", {}), dict) else {}
+    stored = str(answer.get("_input_type", "")).strip()
+    if stored:
+        return stored
+    return "text_only" if int(item.get("image_count", 0) or 0) == 0 else "screenshot"
 
 
 def compact_references(items: Any) -> list[dict[str, Any]]:
@@ -1513,6 +1550,13 @@ def parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_reply_input_type(form: Any) -> str:
+    raw = str(form.get("input_type", "") or form.get("entry_type", "")).strip().lower()
+    if parse_bool(form.get("text_only")) or raw in {"text_only", "text", "text-only"}:
+        return "text_only"
+    return "screenshot"
 
 
 def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
