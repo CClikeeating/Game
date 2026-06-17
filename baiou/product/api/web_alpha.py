@@ -229,8 +229,8 @@ PAGE = """<!doctype html>
               </div>
             </div>
             <div class="field">
-              <label for="question">我该怎么回</label>
-              <textarea id="question">我该怎么回</textarea>
+              <label for="question" id="questionLabel">女生上一句话 / 当前聊天文本</label>
+              <textarea id="question" placeholder="例如：刚到家，有点累"></textarea>
             </div>
             <div class="field">
               <label for="context">补充背景</label>
@@ -393,6 +393,8 @@ PAGE = """<!doctype html>
       document.querySelectorAll("button.entry").forEach(button => button.classList.toggle("active", button.dataset.entry === state.entry));
       const textOnly = state.entry === "text_only";
       $("#images").disabled = textOnly;
+      $("#questionLabel").textContent = textOnly ? "女生上一句话 / 当前聊天文本" : "我该怎么回";
+      $("#question").placeholder = textOnly ? "例如：刚到家，有点累" : "例如：我该怎么回";
       document.querySelectorAll("button.mode").forEach(button => button.disabled = textOnly);
       if (textOnly) selectMode("bailian_rag_fast");
       updateModeCost();
