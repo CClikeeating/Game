@@ -686,8 +686,6 @@ def require_admin(config: dict[str, Any]):
         return fail("admin_not_configured", "管理员 token 未配置。", 503)
     auth = request.headers.get("Authorization", "").strip()
     provided = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("X-Baiou-Admin-Token", "").strip()
-    if not provided:
-        provided = request.args.get("token", "").strip()
     if provided != token:
         return fail("admin_unauthorized", "没有后台访问权限。", 401)
     return None

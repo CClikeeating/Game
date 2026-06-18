@@ -16,35 +16,22 @@ Page({
 
   async init() {
     try {
-      if (!app.globalData.token) {
-        const login = await this.loginWithWechatCode()
-        app.globalData.token = login.token
-        wx.setStorageSync("baiou_token", login.token)
-      }
-      const me = await api.request("/api/v1/me")
-      const data = await api.request("/api/v1/conversations")
-      this.setData({ limits: me.limits || {}, conversations: data.conversations || [] })
+      await api.ensureLogin()
+      await this.refreshConversations()
     } catch (err) {
-      this.toast(err.message || "加载失败")
+      try {
+        await api.reloginAfterAuthError(err)
+        await this.refreshConversations()
+      } catch (retryErr) {
+        this.toast(retryErr.message || "加载失败")
+      }
     }
   },
 
-  loginWithWechatCode() {
-    return new Promise((resolve, reject) => {
-      wx.login({
-        success: async res => {
-          try {
-            const login = await api.request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
-            resolve(login)
-          } catch (err) {
-            reject(err)
-          }
-        },
-        fail: () => {
-          reject({ message: "微信登录失败，请稍后重试" })
-        }
-      })
-    })
+  async refreshConversations() {
+    const me = await api.request("/api/v1/me")
+    const data = await api.request("/api/v1/conversations")
+    this.setData({ limits: me.limits || {}, conversations: data.conversations || [] })
   },
 
   onTitleInput(e) {

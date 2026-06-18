@@ -19,6 +19,40 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
+SCHEMA_MIGRATIONS: dict[str, dict[str, str]] = {
+    "users": {
+        "openid": "openid TEXT DEFAULT ''",
+        "nickname": "nickname TEXT DEFAULT ''",
+        "plan": "plan TEXT NOT NULL DEFAULT 'trial'",
+        "created_at": "created_at TEXT NOT NULL DEFAULT ''",
+        "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
+    },
+    "conversations": {
+        "background": "background TEXT NOT NULL DEFAULT ''",
+        "status": "status TEXT NOT NULL DEFAULT 'active'",
+        "created_at": "created_at TEXT NOT NULL DEFAULT ''",
+        "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
+    },
+    "reply_runs": {
+        "user_context": "user_context TEXT NOT NULL DEFAULT ''",
+        "runtime_context": "runtime_context TEXT NOT NULL DEFAULT ''",
+        "image_count": "image_count INTEGER NOT NULL DEFAULT 0",
+        "image_understanding": "image_understanding TEXT NOT NULL DEFAULT ''",
+        "reference_segments_json": "reference_segments_json TEXT NOT NULL DEFAULT '[]'",
+        "runtime_run_id": "runtime_run_id TEXT NOT NULL DEFAULT ''",
+    },
+    "uploads": {
+        "consumed_at": "consumed_at TEXT NOT NULL DEFAULT ''",
+    },
+    "redeem_codes": {
+        "used_count": "used_count INTEGER NOT NULL DEFAULT 0",
+        "expires_at": "expires_at TEXT NOT NULL DEFAULT ''",
+        "note": "note TEXT NOT NULL DEFAULT ''",
+        "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
+    },
+}
+
+
 class ProductStore:
     def __init__(self, path: str | Path):
         self.path = resolve_path(path)
@@ -190,6 +224,16 @@ class ProductStore:
                 );
                 """
             )
+            self.migrate_schema(conn)
+
+    def migrate_schema(self, conn: sqlite3.Connection) -> None:
+        for table, columns in SCHEMA_MIGRATIONS.items():
+            existing = table_columns(conn, table)
+            if not existing:
+                continue
+            for name, definition in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
     def ensure_user(self, user_id: str, openid: str = "", nickname: str = "") -> dict[str, Any]:
         stamp = now_iso()
@@ -895,6 +939,10 @@ def decode_json(value: str, fallback: Any) -> Any:
         return json.loads(value or "")
     except json.JSONDecodeError:
         return fallback
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def normalize_code(code: str) -> str:

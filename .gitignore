@@ -1,7 +1,7 @@
 # Local data and generated outputs
 data/
 outputs/
-archive/
+/archive/
 other/
 qingsheng-skill/
 
@@ -11,7 +11,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp*/
+.deploy/
 .codegraph/
+.codex-remote-attachments/
 
 # Local secrets and model logs
 .env

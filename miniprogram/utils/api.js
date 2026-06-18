@@ -8,6 +8,53 @@ function token() {
   return app.globalData.token || wx.getStorageSync("baiou_token") || ""
 }
 
+function saveSession(login = {}) {
+  app.globalData.token = login.token || ""
+  app.globalData.user = login.user || app.globalData.user
+  app.globalData.limits = login.limits || app.globalData.limits
+  if (login.token) wx.setStorageSync("baiou_token", login.token)
+  return login
+}
+
+function clearSession() {
+  app.globalData.token = ""
+  app.globalData.user = null
+  wx.removeStorageSync("baiou_token")
+}
+
+function isAuthError(err = {}) {
+  return err.statusCode === 401 || err.code === "auth_required"
+}
+
+function loginWithWechatCode() {
+  return new Promise((resolve, reject) => {
+    wx.login({
+      success: async res => {
+        try {
+          const login = await request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
+          resolve(saveSession(login))
+        } catch (err) {
+          reject(err)
+        }
+      },
+      fail: () => {
+        reject({ message: "微信登录失败，请稍后重试" })
+      }
+    })
+  })
+}
+
+async function ensureLogin() {
+  if (token()) return null
+  return loginWithWechatCode()
+}
+
+async function reloginAfterAuthError(err) {
+  if (!isAuthError(err)) throw err
+  clearSession()
+  return loginWithWechatCode()
+}
+
 function networkErrorMessage(errMsg) {
   if ((errMsg || "").indexOf("fail") >= 0) {
     return "后端服务未连接，请先启动本地 API"
@@ -31,7 +78,7 @@ function request(path, options = {}) {
         if (res.statusCode >= 200 && res.statusCode < 300 && data.ok !== false) {
           resolve(data)
         } else {
-          reject(data.error || { code: "request_failed", message: "请求失败" })
+          reject({ ...(data.error || { code: "request_failed", message: "请求失败" }), statusCode: res.statusCode })
         }
       },
       fail(err) {
@@ -62,7 +109,7 @@ function uploadImage(filePath) {
         if (res.statusCode >= 200 && res.statusCode < 300 && data.ok !== false) {
           resolve(data.upload)
         } else {
-          reject(data.error || { code: "upload_failed", message: "上传失败" })
+          reject({ ...(data.error || { code: "upload_failed", message: "上传失败" }), statusCode: res.statusCode })
         }
       },
       fail(err) {
@@ -72,4 +119,4 @@ function uploadImage(filePath) {
   })
 }
 
-module.exports = { request, uploadImage }
+module.exports = { request, uploadImage, ensureLogin, reloginAfterAuthError, clearSession, isAuthError, loginWithWechatCode }

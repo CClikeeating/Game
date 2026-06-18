@@ -1,7 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 
-from baiou.product.web import app as web_app
+from baiou.product.archive.legacy_web import app as web_app
 
 
 def test_baiou_web_config_uses_baiou_output(monkeypatch, tmp_path: Path) -> None:

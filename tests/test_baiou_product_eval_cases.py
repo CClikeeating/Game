@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from baiou.product import eval_cases
-from baiou.product.eval_inputs import build_eval_input, write_eval_inputs
+from baiou.product.eval import eval_cases
+from baiou.product.eval.eval_inputs import build_eval_input, write_eval_inputs
 
 
 def test_eval_case_template_declares_product_speaker_rule(tmp_path: Path) -> None:
