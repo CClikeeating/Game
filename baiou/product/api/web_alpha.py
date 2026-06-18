@@ -9,9 +9,9 @@ def web_alpha_page_html(config: dict[str, Any]) -> str:
         "defaultMode": config.get("default_mode", "bailian_rag_fast"),
         "modes": config.get("modes", {}),
         "limits": {
-            "daily_reply_quota": config.get("daily_reply_quota", 20),
+            "daily_reply_quota": config.get("daily_reply_quota", 10),
             "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
-            "web_site_daily_quota": config.get("web_site_daily_quota", 500),
+            "web_site_daily_quota": config.get("web_site_daily_quota", 1000),
             "max_images_per_reply": config.get("max_images_per_reply", 3),
             "min_images_per_reply": config.get("min_images_per_reply", 1),
             "max_image_mb": config.get("max_image_mb", 8),
@@ -244,7 +244,6 @@ PAGE = """<!doctype html>
               </div>
             </div>
             <div class="actions">
-              <label class="dry"><input id="dryRun" type="checkbox"> dry-run</label>
               <button id="generateBtn" type="button">生成推荐回复</button>
             </div>
             <div id="workStatus" class="status" aria-live="polite"></div>
@@ -433,7 +432,6 @@ PAGE = """<!doctype html>
       form.append("context", $("#context").value.trim());
       form.append("mode", state.entry === "text_only" ? "bailian_rag_fast" : state.mode);
       form.append("input_type", state.entry);
-      if ($("#dryRun").checked) form.append("dry_run", "true");
       if (state.entry !== "text_only") files.forEach(file => form.append("images", file));
       $("#generateBtn").disabled = true;
       startWaitingTimer();

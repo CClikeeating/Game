@@ -8,7 +8,10 @@ Page({
     limits: app.globalData.limits || {},
     announcements: [],
     products: [],
-    paymentEnabled: false
+    paymentEnabled: false,
+    contactQq: "1179123330",
+    redeemCode: "",
+    redeeming: false
   },
 
   onShow() {
@@ -33,7 +36,8 @@ Page({
         limits: me.limits || app.globalData.limits || {},
         announcements: announcements.announcements || [],
         products: billing.products || [],
-        paymentEnabled: !!billing.payment_enabled
+        paymentEnabled: !!billing.payment_enabled,
+        contactQq: billing.contact_qq || "1179123330"
       })
     } catch (err) {
       this.setData({ limits: app.globalData.limits || this.data.limits })
@@ -49,23 +53,38 @@ Page({
             const login = await api.request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
             resolve(login)
           } catch (err) {
-            try {
-              const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
-              resolve(fallback)
-            } catch (fallbackErr) {
-              reject(fallbackErr)
-            }
+            reject(err)
           }
         },
-        fail: async () => {
-          try {
-            const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
-            resolve(fallback)
-          } catch (fallbackErr) {
-            reject(fallbackErr)
-          }
+        fail: () => {
+          reject({ message: "微信登录失败，请稍后重试" })
         }
       })
     })
+  },
+
+  onRedeemCodeInput(e) {
+    this.setData({ redeemCode: e.detail.value })
+  },
+
+  async submitRedeemCode() {
+    const code = this.data.redeemCode.trim()
+    if (!code) {
+      wx.showToast({ title: "请输入兑换码", icon: "none" })
+      return
+    }
+    this.setData({ redeeming: true })
+    try {
+      const data = await api.request("/api/v1/redeem-codes/redeem", {
+        method: "POST",
+        data: { code }
+      })
+      this.setData({ limits: data.limits || this.data.limits, redeemCode: "" })
+      wx.showToast({ title: "兑换成功", icon: "none" })
+    } catch (err) {
+      wx.showToast({ title: err.message || "兑换失败", icon: "none" })
+    } finally {
+      this.setData({ redeeming: false })
+    }
   }
 })

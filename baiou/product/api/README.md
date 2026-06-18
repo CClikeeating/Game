@@ -14,13 +14,13 @@ http://127.0.0.1:7871
 
 The API keeps the product runtime unchanged and adds the first miniprogram product shell:
 
-- user placeholder login
+- WeChat code login for miniprogram users
 - conversations with independent background
 - reply generation with recent conversation history
 - staged image uploads for `wx.uploadFile`
 - daily reply quota
 - feedback records
-- announcement and billing placeholders
+- announcement, contact-more-quota, and redeem-code placeholders
 - `/app` web alpha entry with access-code login
 
 Main config:
@@ -40,16 +40,20 @@ outputs/baiou/product/app.db
 The user-facing browser alpha is served by the same Flask API:
 
 ```text
-http://101.133.161.248/app
+https://baioulove.xyz/app
 ```
 
 Recommended server-only environment variables:
 
 ```text
 BAIOU_WEB_ACCESS_CODES=内测码
-BAIOU_WEB_IP_DAILY_QUOTA=20
-BAIOU_WEB_SITE_DAILY_QUOTA=500
-BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_quality=2
+BAIOU_DAILY_REPLY_QUOTA=10
+BAIOU_WEB_IP_DAILY_QUOTA=0
+BAIOU_WEB_SITE_DAILY_QUOTA=1000
+BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_strategy_quality=2
+BAIOU_CONTACT_QQ=1179123330
+BAIOU_WECHAT_APPID=小程序AppID
+BAIOU_WECHAT_SECRET=小程序AppSecret
 BAIOU_TRUSTED_PROXY_IPS=127.0.0.1,::1
 BAIOU_MINIPROGRAM_DEV_LOGIN=false
 BAIOU_MINIPROGRAM_DEBUG=false
@@ -67,3 +71,5 @@ The admin API can:
 - list users and recent masked login IPs through `/api/v1/admin/users`
 - set or clear per-user quota overrides through `/api/v1/admin/users/<user_id>/quota`
 - view today's IP usage through `/api/v1/admin/ip-usage`
+- create redeem codes through `POST /api/v1/admin/redeem-codes`
+- export feedback and screenshots for review through `/api/v1/admin/feedback/export.zip`

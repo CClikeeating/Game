@@ -15,13 +15,20 @@
   </view>
 
   <view class="panel">
-    <view class="section-title">会员与充值</view>
+    <view class="section-title">更多额度</view>
     <view wx:for="{{products}}" wx:key="product_id" class="row" style="margin-bottom: 12rpx">
       <view class="grow">
         <view>{{item.name}}</view>
         <view class="muted">{{item.description}}</view>
       </view>
-      <button class="button secondary" disabled="{{!paymentEnabled}}">未开放</button>
     </view>
+    <view wx:if="{{!products.length}}" class="muted">第一版免费使用，如需更多额度请联系作者。</view>
+    <view class="muted">作者 QQ：{{contactQq}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">兑换码</view>
+    <input class="input" placeholder="输入兑换码" value="{{redeemCode}}" bindinput="onRedeemCodeInput" />
+    <button class="button" style="margin-top: 16rpx" loading="{{redeeming}}" disabled="{{redeeming}}" bindtap="submitRedeemCode">兑换额度</button>
   </view>
 </view>

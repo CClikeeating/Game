@@ -5,9 +5,9 @@
   "limits": {
     "max_conversations_per_user": 5,
     "history_turns_for_reply": 6,
-    "daily_reply_quota": 20,
-    "web_ip_daily_quota": 20,
-    "web_site_daily_quota": 500,
+    "daily_reply_quota": 10,
+    "web_ip_daily_quota": 0,
+    "web_site_daily_quota": 1000,
     "mode_unit_costs": {
       "bailian_rag_fast": 1,
       "bailian_rag_strategy_quality": 2
@@ -31,9 +31,10 @@
   "announcements": [
     {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放回复模块，聊天窗口、反馈和额度已经接入。", "status": "active"}
   ],
+  "contact": {"qq": "1179123330"},
   "billing": {
     "products": [
-      {"product_id": "daily_trial", "name": "内测额度", "description": "第一期占位商品，暂未接入真实支付。", "enabled": false}
+      {"product_id": "contact_more_quota", "name": "联系作者获取更多额度", "description": "第一版免费使用；如需更多额度，请联系 QQ：1179123330。", "enabled": false}
     ]
   }
 }

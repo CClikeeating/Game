@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 from baiou.product.api import app as api_app
 
@@ -445,9 +446,58 @@ def test_admin_page_exports_csv_with_authorization_header(monkeypatch, tmp_path:
     html = client.get("/admin").get_data(as_text=True)
 
     assert "?token=" not in html
-    assert 'fetch("/api/v1/admin/feedback/export.csv"' in html
+    assert 'fetch("/api/v1/admin/feedback/export.zip"' in html
     assert "/api/v1/admin/reply-runs?limit=20" in html
     assert '"Authorization": "Bearer " + tokenInput.value.trim()' in html
+
+
+def test_admin_feedback_review_zip_includes_csv_and_screenshots(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", min_images_per_reply=1)
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    upload = client.post(
+        "/api/v1/uploads",
+        headers=auth_headers(),
+        data={"file": (BytesIO(b"image-bytes"), "chat.jpg")},
+        content_type="multipart/form-data",
+    )
+    upload_id = upload.get_json()["upload"]["upload_id"]
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "hello", "upload_ids": [upload_id]})
+    run_id = response.get_json()["reply_run"]["run_id"]
+    client.post(
+        "/api/v1/feedback",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "run_id": run_id, "rating": "bad", "notes": "review"},
+    )
+
+    export = client.get("/api/v1/admin/feedback/export.zip", headers=admin_headers())
+
+    assert export.status_code == 200
+    with ZipFile(BytesIO(export.data)) as archive:
+        names = archive.namelist()
+        assert "feedback.csv" in names
+        assert any(name.startswith(f"screenshots/{run_id}/") and name.endswith(".jpg") for name in names)
+        assert "review" in archive.read("feedback.csv").decode("utf-8-sig")
+
+
+def test_redeem_code_updates_user_daily_quota(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=10)
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    login_and_default_conversation(client)
+    created = client.post(
+        "/api/v1/admin/redeem-codes",
+        headers=admin_headers(),
+        json={"code": "MORE20", "daily_reply_quota": 20, "max_uses": 1},
+    )
+
+    redeemed = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers(), json={"code": " more20 "})
+    again = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers(), json={"code": "MORE20"})
+
+    assert created.status_code == 200
+    assert redeemed.status_code == 200
+    assert redeemed.get_json()["limits"]["daily_reply_quota"] == 20
+    assert redeemed.get_json()["limits"]["daily_reply_remaining"] == 20
+    assert again.status_code == 409
 
 
 def test_admin_reply_runs_include_segmented_model_timings(monkeypatch, tmp_path: Path) -> None:
@@ -503,6 +553,7 @@ def test_client_ip_ignores_forwarded_for_from_untrusted_remote(monkeypatch, tmp_
         admin_token="admin-secret",
         web_access_required=True,
         web_access_codes=["test-code"],
+        web_ip_daily_quota=10,
         trusted_proxy_ips=["127.0.0.1"],
     )
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)

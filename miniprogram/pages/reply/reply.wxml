@@ -8,12 +8,23 @@
   </view>
 
   <view class="quick-guide">
-    <view class="guide-text">上传聊天截图 + 用户问题，我给你生成可直接发送的话。</view>
+    <view class="guide-text">{{entryType === "text_only" ? "输入对方上一句话，我给你生成可直接发送的话。" : "上传聊天截图 + 用户问题，我给你生成可直接发送的话。"}}</view>
     <button class="small-btn soft" bindtap="startNewConversation">新窗口</button>
   </view>
 
+  <view class="entry-strip surface">
+    <view class="entry-pill {{entryType === 'text_only' ? 'active' : ''}}" data-entry="text_only" bindtap="selectEntry">
+      <view>文字输入</view>
+      <text>日常接话，扣 {{fastCost}}</text>
+    </view>
+    <view class="entry-pill {{entryType === 'screenshot' ? 'active' : ''}}" data-entry="screenshot" bindtap="selectEntry">
+      <view>截图回复</view>
+      <text>上传聊天截图</text>
+    </view>
+  </view>
+
   <view class="main-card">
-    <view class="upload-panel {{images.length ? 'ready' : ''}}">
+    <view wx:if="{{entryType === 'screenshot'}}" class="upload-panel {{images.length ? 'ready' : ''}}">
       <view class="upload-copy">
         <view class="upload-title">{{images.length ? "已上传聊天截图" : "请上传聊天截图"}}</view>
         <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。没有截图不能生成。</view>
@@ -22,7 +33,7 @@
       <button class="upload-btn" bindtap="chooseImages">{{images.length ? "继续加" : "上传"}}</button>
     </view>
 
-    <view wx:if="{{images.length}}" class="image-list">
+    <view wx:if="{{entryType === 'screenshot' && images.length}}" class="image-list">
       <view wx:for="{{images}}" wx:key="tempFilePath" class="image-item">
         <image src="{{item.tempFilePath}}" mode="aspectFill"></image>
         <view class="grow muted">{{item.sizeText}}</view>
@@ -31,8 +42,8 @@
     </view>
 
     <view class="compact-field">
-      <view class="label">用户问题</view>
-      <textarea class="question-input" placeholder="我该怎么回" value="{{question}}" bindinput="onQuestionInput"></textarea>
+      <view class="label">{{entryType === "text_only" ? "对方上一句话" : "用户问题"}}</view>
+      <textarea class="question-input" placeholder="{{entryType === 'text_only' ? '把对方上一句话粘到这里' : '我该怎么回'}}" value="{{question}}" bindinput="onQuestionInput"></textarea>
     </view>
 
     <view class="compact-field">
@@ -50,29 +61,18 @@
     </view>
     <view class="mode-block">
       <view class="mode-row">
-        <view class="mode-strip">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">快速模式</view>
-          <view class="mode-pill {{mode === 'bailian_rag_quality' ? 'active' : ''}}" data-mode="bailian_rag_quality" bindtap="selectMode">质量模式</view>
+        <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
         </view>
       </view>
-      <view class="mode-help">快速模式更轻更稳；质量模式会多看一点局势和参考片段。</view>
+      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "日常接话稳妥接住话题；暧昧推荐更偏升温和推拉。"}}</view>
     </view>
     <view class="reply-box">{{result.answer.reply || "暂无回复"}}</view>
 
     <view class="analysis-block">
       <view class="analysis-title">分析</view>
       <view class="analysis-text">{{result.answer.coach_analysis || "无"}}</view>
-    </view>
-
-    <view class="fold-row" data-key="debugOpen" bindtap="toggleFold">
-      <view>截图理解 / 参考信息</view>
-      <view class="muted">{{debugOpen ? "收起" : "展开"}}</view>
-    </view>
-    <view wx:if="{{debugOpen}}" class="fold-content">
-      <view>{{result.image_understanding || "暂无截图理解"}}</view>
-      <view wx:if="{{result.reference_segments.length}}" class="ref-list">
-        <view wx:for="{{result.reference_segments}}" wx:key="segment_id" class="ref-item">{{item.segment_id || item.filename}} {{item.text || ""}}</view>
-      </view>
     </view>
 
     <view class="feedback-row">
@@ -89,14 +89,14 @@
     </view>
     <view class="mode-block">
       <view class="mode-row">
-        <view class="mode-strip">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">快速模式</view>
-          <view class="mode-pill {{mode === 'bailian_rag_quality' ? 'active' : ''}}" data-mode="bailian_rag_quality" bindtap="selectMode">质量模式</view>
+        <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
         </view>
       </view>
-      <view class="mode-help">快速模式更轻更稳；质量模式会多看一点局势和参考片段。</view>
+      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "日常接话稳妥接住话题；暧昧推荐更偏升温和推拉。"}}</view>
     </view>
-    <view class="empty-reply">上传聊天截图后，生成的回复会出现在这里。</view>
+    <view class="empty-reply">{{entryType === "text_only" ? "输入文字后，生成的回复会出现在这里。" : "上传聊天截图后，生成的回复会出现在这里。"}}</view>
     <view class="empty-analysis">
       <view class="analysis-title">分析</view>
       <view class="analysis-text">生成后会一起展示为什么这么回。</view>
