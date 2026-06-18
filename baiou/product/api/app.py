@@ -19,8 +19,6 @@ from baiou.common.io import PROJECT_ROOT, load_data, resolve_path
 from baiou.product.api.web_alpha import web_alpha_page_html
 from baiou.product.runtime.reply_engine import (
     MODE_BAILIAN_RAG_FAST,
-    MODE_BAILIAN_RAG_QUALITY,
-    MODE_BAILIAN_RAG_STRATEGY_FAST,
     MODE_BAILIAN_RAG_STRATEGY_QUALITY,
     normalize_mode,
     run_reply,
@@ -28,6 +26,11 @@ from baiou.product.runtime.reply_engine import (
 from baiou.product.storage import ProductStore
 
 CONFIG_ROOT = PROJECT_ROOT / "baiou" / "config" / "product"
+USER_ALLOWED_REPLY_MODES = {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY}
+USER_MODE_LABELS = {
+    MODE_BAILIAN_RAG_FAST: "日常接话",
+    MODE_BAILIAN_RAG_STRATEGY_QUALITY: "暧昧推荐",
+}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "server": {"host": "127.0.0.1", "port": 7871, "debug": False},
@@ -48,10 +51,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "runtime": {
         "default_mode": MODE_BAILIAN_RAG_FAST,
-        "modes": {
-            MODE_BAILIAN_RAG_FAST: "日常接话",
-            MODE_BAILIAN_RAG_STRATEGY_QUALITY: "暧昧推荐",
-        },
+        "modes": USER_MODE_LABELS,
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
     "admin": {"token": ""},
@@ -64,7 +64,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 def create_app(config: dict[str, Any] | None = None, store: ProductStore | None = None) -> Flask:
-    config = config or load_api_config()
+    config = sanitize_api_config(config or load_api_config())
     store = store or ProductStore(config["sqlite_path"])
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = int(config["max_images_per_reply"]) * int(config["max_image_bytes"]) + 1024 * 1024
@@ -475,8 +475,8 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
                 MODE_BAILIAN_RAG_STRATEGY_QUALITY: 2,
             },
         ),
-        "default_mode": os.environ.get("BAIOU_REPLY_MODE") or runtime.get("default_mode", MODE_BAILIAN_RAG_FAST),
-        "modes": runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"]),
+        "default_mode": normalize_user_reply_mode(os.environ.get("BAIOU_REPLY_MODE") or runtime.get("default_mode", MODE_BAILIAN_RAG_FAST)),
+        "modes": user_reply_modes(runtime.get("modes", DEFAULT_CONFIG["runtime"]["modes"])),
         "default_user_id": os.environ.get("BAIOU_MINIPROGRAM_DEFAULT_USER_ID") or auth.get("default_user_id", "dev_user"),
         "dev_login_enabled": parse_bool(os.environ.get("BAIOU_MINIPROGRAM_DEV_LOGIN"), bool(auth.get("dev_login_enabled", True))),
         "session_days": int(os.environ.get("BAIOU_SESSION_DAYS") or auth.get("session_days", 30)),
@@ -500,6 +500,16 @@ def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> None:
             deep_update(base[key], value)
         else:
             base[key] = value
+
+
+def sanitize_api_config(config: dict[str, Any]) -> dict[str, Any]:
+    output = dict(config)
+    output["default_mode"] = normalize_user_reply_mode(output.get("default_mode", MODE_BAILIAN_RAG_FAST))
+    output["modes"] = user_reply_modes(output.get("modes", {}))
+    output["mode_unit_costs"] = {
+        mode: mode_unit_cost(output, mode) for mode in [MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY]
+    }
+    return output
 
 
 def ok(payload: dict[str, Any], status: int = 200):
@@ -830,8 +840,17 @@ def first_announcement(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_api_mode(value: str, config: dict[str, Any]) -> str:
-    mode = normalize_mode(value)
-    return mode if mode in config["modes"] else normalize_mode(config["default_mode"])
+    return normalize_user_reply_mode(value or config.get("default_mode", MODE_BAILIAN_RAG_FAST))
+
+
+def normalize_user_reply_mode(value: Any) -> str:
+    mode = normalize_mode(str(value or ""))
+    return mode if mode in USER_ALLOWED_REPLY_MODES else MODE_BAILIAN_RAG_FAST
+
+
+def user_reply_modes(raw_modes: Any) -> dict[str, str]:
+    configured = raw_modes if isinstance(raw_modes, dict) else {}
+    return {mode: str(configured.get(mode) or USER_MODE_LABELS[mode]) for mode in [MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY]}
 
 
 def build_runtime_context(conversation: dict[str, Any], history: list[dict[str, Any]], user_context: str) -> str:

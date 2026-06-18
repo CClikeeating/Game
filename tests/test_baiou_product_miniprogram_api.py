@@ -243,6 +243,56 @@ def test_web_ip_quota_uses_mode_unit_cost_and_dry_run_is_free(monkeypatch, tmp_p
     assert len(captured) == 2
 
 
+def test_legacy_user_modes_fall_back_to_fast_mode(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        min_images_per_reply=0,
+        default_mode="bailian_rag_quality",
+        modes={
+            "bailian_rag_fast": "日常接话",
+            "bailian_rag_quality": "旧质量模式",
+            "bailian_rag_strategy_fast": "旧策略模式",
+            "bailian_rag_strategy_quality": "暧昧推荐",
+        },
+        mode_unit_costs={
+            "bailian_rag_fast": 1,
+            "bailian_rag_quality": 9,
+            "bailian_rag_strategy_fast": 8,
+            "bailian_rag_strategy_quality": 2,
+        },
+    )
+    client, captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    health = client.get("/api/v1/health").get_json()
+
+    old_quality = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "old quality", "mode": "bailian_rag_quality"})
+    old_strategy = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "question": "old strategy", "mode": "bailian_rag_strategy_fast"},
+    )
+    old_default = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "old default"})
+    allowed = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "question": "allowed", "mode": "bailian_rag_strategy_quality"},
+    )
+
+    assert health["default_mode"] == "bailian_rag_fast"
+    assert health["modes"] == {"bailian_rag_fast": "日常接话", "bailian_rag_strategy_quality": "暧昧推荐"}
+    assert health["limits"]["mode_unit_costs"] == {"bailian_rag_fast": 1, "bailian_rag_strategy_quality": 2}
+    assert old_quality.status_code == 200
+    assert old_strategy.status_code == 200
+    assert old_default.status_code == 200
+    assert allowed.status_code == 200
+    assert [item["mode"] for item in captured] == [
+        "bailian_rag_fast",
+        "bailian_rag_fast",
+        "bailian_rag_fast",
+        "bailian_rag_strategy_quality",
+    ]
+
+
 def test_upload_limits_and_staged_upload_ids(monkeypatch, tmp_path: Path) -> None:
     config = make_config(tmp_path, max_images_per_reply=1)
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
