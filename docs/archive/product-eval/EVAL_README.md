@@ -15,7 +15,7 @@ outputs/baiou/cases/knowledge/eval_sets/product_regression_35_weak8_20260614/seg
 Build product-ready inputs:
 
 ```powershell
-python -m baiou.product.eval_inputs outputs\baiou\cases\knowledge\eval_sets\product_regression_35_weak8_20260614\segments.jsonl --overrides-path baiou\product\eval_overrides\product_regression_35_weak8_20260614.json
+python -m baiou.product.eval.eval_inputs outputs\baiou\cases\knowledge\eval_sets\product_regression_35_weak8_20260614\segments.jsonl --overrides-path docs\archive\product-eval\eval_overrides\product_regression_35_weak8_20260614.json
 ```
 
 Generated files:
@@ -56,7 +56,7 @@ product_eval_overrides.json
 For handoff, keep a tracked copy under:
 
 ```text
-baiou/product/eval_overrides/{eval_set_name}.json
+docs/archive/product-eval/eval_overrides/{eval_set_name}.json
 ```
 
 Example:

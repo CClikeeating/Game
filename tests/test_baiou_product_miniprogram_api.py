@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
 from baiou.product.api import app as api_app
+from baiou.product.storage import ProductStore
 
 
 def make_config(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
@@ -115,6 +117,58 @@ def test_login_requires_code_when_dev_login_is_disabled(monkeypatch, tmp_path: P
 
     assert response.status_code == 401
     assert response.get_json()["error"]["code"] == "login_code_required"
+
+
+def test_sqlite_store_migrates_existing_product_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                user_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE reply_runs (
+                run_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                question TEXT NOT NULL,
+                status TEXT NOT NULL,
+                answer_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE uploads (
+                upload_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+
+    ProductStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for table in ["users", "conversations", "reply_runs", "uploads"]
+        }
+    assert {"openid", "nickname", "plan"} <= columns["users"]
+    assert {"background", "status"} <= columns["conversations"]
+    assert {"runtime_context", "image_understanding", "reference_segments_json", "runtime_run_id"} <= columns["reply_runs"]
+    assert "consumed_at" in columns["uploads"]
 
 
 def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch, tmp_path: Path) -> None:
@@ -424,11 +478,13 @@ def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Pa
     )
 
     denied = client.get("/api/v1/admin/stats")
+    query_token = client.get("/api/v1/admin/stats?token=admin-secret")
     stats = client.get("/api/v1/admin/stats", headers=admin_headers())
     feedback = client.get("/api/v1/admin/feedback", headers=admin_headers())
     export = client.get("/api/v1/admin/feedback/export.csv", headers=admin_headers())
 
     assert denied.status_code == 401
+    assert query_token.status_code == 401
     assert stats.status_code == 200
     assert stats.get_json()["stats"]["totals"]["reply_runs"] == 1
     assert "site_quota" in stats.get_json()["stats"]

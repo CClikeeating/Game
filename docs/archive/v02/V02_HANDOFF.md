@@ -233,15 +233,15 @@ Product-ready eval inputs are generated from the raw holdout set. Do not directl
 Tracked generation rule and override:
 
 ```text
-baiou/product/eval_inputs.py
-baiou/product/EVAL_README.md
-baiou/product/eval_overrides/product_regression_35_weak8_20260614.json
+baiou/product/eval/eval_inputs.py
+docs/archive/product-eval/EVAL_README.md
+docs/archive/product-eval/eval_overrides/product_regression_35_weak8_20260614.json
 ```
 
 Regenerate product-ready inputs:
 
 ```powershell
-python -m baiou.product.eval_inputs outputs\baiou\cases\knowledge\eval_sets\product_regression_35_weak8_20260614\segments.jsonl --overrides-path baiou\product\eval_overrides\product_regression_35_weak8_20260614.json
+python -m baiou.product.eval.eval_inputs outputs\baiou\cases\knowledge\eval_sets\product_regression_35_weak8_20260614\segments.jsonl --overrides-path docs\archive\product-eval\eval_overrides\product_regression_35_weak8_20260614.json
 ```
 
 Expected product eval summary:
