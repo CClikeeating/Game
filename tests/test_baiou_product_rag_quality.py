@@ -14,6 +14,7 @@ from baiou.product.runtime.reply_engine import (
     heuristic_strategy_guidance,
     normalize_mode,
     normalize_quality_guidance,
+    normalize_strategy_guidance,
     normalize_reply_result,
     resolve_user_id,
     vision_style_for_mode,
@@ -71,13 +72,13 @@ def test_bailian_rag_max_num_results_is_configurable(monkeypatch) -> None:
     assert cfg["file_search"]["max_num_results"] == 5
 
 
-def test_fast_mode_uses_short_vision_prompt_but_quality_keeps_full_prompt() -> None:
+def test_fast_and_strategy_modes_use_short_vision_prompt_but_quality_keeps_full_prompt() -> None:
     models = {"vision_model": {}}
 
     assert vision_style_for_mode(models, MODE_BAILIAN_RAG_FAST) == "dialogue"
     assert vision_style_for_mode(models, MODE_BAILIAN_RAG_STRATEGY_FAST) == "dialogue"
+    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_STRATEGY_QUALITY) == "dialogue"
     assert vision_style_for_mode(models, MODE_BAILIAN_RAG_QUALITY) == "full"
-    assert vision_style_for_mode(models, MODE_BAILIAN_RAG_STRATEGY_QUALITY) == "full"
 
 
 def test_admin_config_overrides_rag_file_search(monkeypatch, tmp_path) -> None:
@@ -162,6 +163,22 @@ def test_strategy_fast_prompt_keeps_rag_as_expression_reference() -> None:
     assert "最终 reply 只能是一句中文短回复" in prompt
 
 
+def test_daily_fast_prompt_is_slim_low_pressure_chat_mode() -> None:
+    prompt = build_bailian_rag_prompt("用户问题：\n女生/对方最后一句：今天好累")
+
+    assert "日常快速回复助手" in prompt
+    assert "安全无压力" in prompt
+    assert "接话" in prompt
+    assert "话题" in prompt
+    assert "轻微暧昧" in prompt
+    assert "策略质量模式" in prompt
+    assert "daily_fast_v01" in prompt
+    assert "只找日常聊天表达参考" in prompt
+    assert "高框架推拉模式的回复生成器" not in prompt
+    assert "策略门决策结果" not in prompt
+    assert "当前基础标签与软锚点" not in prompt
+
+
 def test_strategy_quality_prompt_uses_explicit_strategy_as_decision_point() -> None:
     strategy_prompt = build_strategy_label_prompt("用户问题：\n我该怎么回")
     reply_prompt = build_bailian_rag_prompt(
@@ -169,6 +186,7 @@ def test_strategy_quality_prompt_uses_explicit_strategy_as_decision_point() -> N
         strategy_guidance={
             "state": {"关系阶段": "熟悉期", "对方投入度": "中", "当前压力": "低", "互动活跃度": "中"},
             "strategy": "暧昧试探",
+            "rag_query": "暧昧试探 短回复",
             "reason": "对方有承接，可以轻微升温。",
             "risk_level": "低",
             "forbid": ["长篇解释"],
@@ -179,10 +197,48 @@ def test_strategy_quality_prompt_uses_explicit_strategy_as_decision_point() -> N
     assert "策略是动作，不是关系结论" in strategy_prompt
     assert "不要依赖案例来决定局势" in strategy_prompt
     assert "高张力推进边界" in strategy_prompt
+    assert "rag_query 要求" in strategy_prompt
+    assert "一个中文检索短语" in strategy_prompt
     assert "策略门决策结果" in reply_prompt
     assert "上面的 strategy 是唯一决策点" in reply_prompt
     assert "不得反向改变策略" in reply_prompt
+    assert "优先只使用策略门 rag_query" in reply_prompt
+    assert "不要把同一意图拆成多条同义查询" in reply_prompt
     assert "最终 reply 只能是一句中文短回复" in reply_prompt
+
+
+def test_strategy_guidance_preserves_single_rag_query_soft_constraint() -> None:
+    guidance = normalize_strategy_guidance(
+        {
+            "state": {"关系阶段": "熟悉期", "对方投入度": "中", "当前压力": "低"},
+            "scene_type": "主动邀约拉扯",
+            "strategy": "高张力推进",
+            "rag_query": ["主动邀约拉扯，反客为主，短回复"],
+            "reason": "对方主动邀约，需要保留选择权。",
+            "risk_level": "低",
+            "forbid": ["直接答应"],
+            "style_hint": "俏皮",
+        },
+        "女生/对方最后一句：走 帅哥 出来吃饭",
+    )
+
+    assert guidance["scene_type"] == "主动邀约拉扯"
+    assert guidance["rag_query"] == "主动邀约拉扯 反客为主 短回复"
+    assert "，" not in guidance["rag_query"]
+
+
+def test_strategy_guidance_adds_fallback_rag_query_when_missing() -> None:
+    guidance = normalize_strategy_guidance(
+        {
+            "scene_type": "其他",
+            "strategy": "轻推进",
+            "risk_level": "低",
+        },
+        "女生/对方最后一句：我觉得我们是不是太快了",
+    )
+
+    assert guidance["scene_type"] == "其他"
+    assert guidance["rag_query"] == "关系节奏测试 轻推进"
 
 
 def test_quality_label_prompt_does_not_overread_low_information_acknowledgement() -> None:

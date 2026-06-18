@@ -137,6 +137,42 @@ FRAME_ACTION_DETAIL_RULE = (
     "不要反过来筛选她够不够甜、够不够有趣。已有玩笑空间或暧昧承接时可以更大胆一点，但必须短、自然、有兜底。"
 )
 
+HIGH_FRAME_SCOPE_RULE = (
+    "高框架推拉模式只服务高张力场景：破解测试、筛选/否定、推开、主动邀约拉扯、暧昧进攻、关系节奏重定义。"
+    "不要承担普通日常接话、寒暄、查户口、长篇安慰或泛泛建议。输出永远是一句微信可发短回复。"
+)
+
+HIGH_FRAME_CORE_RULE = (
+    "核心动作：1) 不进对方预设，不解释自证，不自我撤退；2) 先识别话语动作，再选择反抛定义权、拿回筛选权、"
+    "反客为主、轻推回去、事实纠偏、极短直给、现实状态收住后留钩子；3) 主动邀约/命令不能直接答应，先保留选择权；"
+    "4) 关系节奏质疑没有明确停止/不舒服证据时，按推开式测试处理，不能进入顺从模式，不回“好，听你的/按你的节奏来/那我们慢一点”，"
+    "不用“快慢不重要”否定感受，要拆表面维度和背后担忧，用更高层标准重定义，且不要固定输出同一句；labels 不要写男生目标=降压；"
+    "5) 明确边界只收住当前推进并换话题，不道歉自证、不交出整体框架；6) 有玩笑空间可暧昧进攻，但短、自然、有兜底；"
+    "7) 补偿、奖励、撒娇索取类场景要给一点甜头或暧昧想象，再保留框架，不能只冷冷地设门槛；"
+    "8) 具体物件/食物/表情/地点/药品出现时，优先贴对象特征轻损或暧昧联想，不要泛泛回看表现、够不够格。"
+)
+
+HIGH_FRAME_FORBID_RULE = (
+    "禁止：跪舔、讨好、长篇解释、PUA、油腻强压、连续追问、默认接受安排、你猜/吃醋了替代直给、"
+    "顺着误会哄、缺证据编造经历地点、把真实边界当测试。"
+)
+
+DAILY_FAST_SCOPE_RULE = (
+    "日常快速回复模式只服务安全无压力的低压力聊天：接话、顺着当前话题聊下去、轻松转移、状态承接、普通关心、轻微暧昧。"
+    "它不承担破解测试、进攻推进、高框架反制、强邀约或复杂关系分析；这些留给策略质量模式。"
+)
+
+DAILY_FAST_CORE_RULE = (
+    "核心动作：1) 先接住对方这句话的情绪或信息，再给一个容易回复的下一句；2) 回复短、自然、无压力，像微信里随手能发；"
+    "3) 可以带一点轻微暧昧或俏皮，但不要强撩、压迫、反击、说教；4) 对方忙、累、身体不舒服或明确不想聊时，先收住当前推进，"
+    "轻轻换话题或留一个低压力钩子；5) 关系节奏这类含混担忧不要顺从投降，也不要高强度破解，只轻承接担忧并把话题带回舒服相处。"
+)
+
+DAILY_FAST_FORBID_RULE = (
+    "禁止：长篇解释、连续追问、查户口、PUA、油腻强压、默认道歉自证、跪舔讨好、把普通聊天硬判成废物测试、"
+    "主动加入高框架/推拉/进攻/反制等策略词。"
+)
+
 
 def run_reply(
     question: str,
@@ -406,9 +442,9 @@ def image_payload(
 
 def vision_style_for_mode(models: dict[str, Any], runtime_mode: str) -> str:
     cfg = models.get("vision_model", {}) if isinstance(models.get("vision_model", {}), dict) else {}
-    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_FAST}:
+    if runtime_mode in {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY}:
         return str(cfg.get("fast_prompt_style") or VISION_STYLE_DIALOGUE)
-    if runtime_mode in {MODE_BAILIAN_RAG_QUALITY, MODE_BAILIAN_RAG_STRATEGY_QUALITY}:
+    if runtime_mode == MODE_BAILIAN_RAG_QUALITY:
         return str(cfg.get("quality_prompt_style") or VISION_STYLE_FULL)
     return str(cfg.get("default_prompt_style") or VISION_STYLE_FULL)
 
@@ -504,44 +540,32 @@ def build_frame_action_guard(input_text: str) -> str:
 
 
 def build_strategy_label_prompt(input_text: str) -> str:
-    principles = load_config("prompt_principles.json")
     action_guard = build_frame_action_guard(input_text)
     return "\n\n".join(
         [
-            "你是 Baiou 策略门实验模式的轻量策略决策助手。",
-            "任务：根据当前聊天内容、截图理解和用户补充背景，先压缩状态，再选择一个回复动作策略。只输出合法 JSON，不要 Markdown。",
-            "关键边界：策略是动作，不是关系结论；不要判断她喜不喜欢，只判断这一句该轻承接、推进、撤退、试探、转移还是提醒风险。",
-            "RAG 后续只会做表达参考，所以你必须独立给出策略；不要依赖案例来决定局势。",
-            "策略枚举：轻承接、轻推进、轻撤退、暧昧试探、高张力推进、转移话题、风险提醒。",
-            "高张力推进边界：只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
+            "你是 Baiou 高框架推拉模式的策略门。只输出合法 JSON，不要 Markdown。",
+            "任务：只判断当前这句该用什么高框架动作，不负责写最终回复；策略是动作，不是关系结论，不要依赖案例来决定局势。",
+            HIGH_FRAME_SCOPE_RULE,
+            HIGH_FRAME_CORE_RULE,
+            HIGH_FRAME_FORBID_RULE,
             TEXT_STRUCTURED_INPUT_RULE,
-            FRAME_ACTION_RULE,
-            FRAME_ACTION_DETAIL_RULE,
             action_guard,
-            RELATIONSHIP_PACE_RULE,
-            "状态字段枚举：关系阶段=刚认识/破冰期/熟悉期/暧昧升温期/高意向推进期；对方投入度=低/中/高；当前压力=低/中/高；互动活跃度=低/中/高。",
-            "原则：",
-            json.dumps(principles, ensure_ascii=False, indent=2),
+            "策略枚举：轻承接、轻推进、轻撤退、暧昧试探、高张力推进、转移话题、风险提醒。",
+            "高张力推进边界：只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用。",
+            "场景类型枚举：提问破解/筛选标准/推开否定/主动邀约拉扯/关系节奏测试/极短追问/事实纠偏/现实状态边界/暧昧进攻/其他。",
+            "判断要求：普通接话不要硬标测试；但一旦有推开、筛选、否定、主动命令、关系节奏质疑，要保持框架，不能进入顺从模式。",
+            "rag_query 要求：给后续知识库检索一个中文短查询，只保留当前话语动作、场景类型和需要的表达手感；不要列多条，不要写数组，不要加顿号或逗号。",
             "输出结构：",
             json.dumps(
                 {
-                    "state": {"关系阶段": "", "对方投入度": "", "当前压力": "", "互动活跃度": ""},
+                    "state": {"关系阶段": "", "对方投入度": "", "当前压力": ""},
+                    "scene_type": "",
                     "strategy": "",
+                    "rag_query": "一个中文检索短语",
                     "reason": "一句话理由",
                     "risk_level": "低/中/高",
                     "forbid": ["不要做的动作"],
-                    "style_hint": "自然/松弛/俏皮/暧昧但不油/有边界地推进/降压",
-                    "labels": {
-                        "聊天阶段": "",
-                        "接触状态": "",
-                        "关系推进目标": "",
-                        "女生状态": "",
-                        "男生目标": "",
-                        "推荐策略": "",
-                        "风险类型": [],
-                        "回复强度": "",
-                        "高热度信号": "",
-                    },
+                    "style_hint": "松弛/俏皮/暧昧但不油/有边界地推进/降压",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -584,8 +608,96 @@ def build_bailian_rag_prompt(
     strategy_mode: bool = False,
     strategy_guidance: dict[str, Any] | None = None,
 ) -> str:
-    principles = load_config("prompt_principles.json")
     action_guard = build_frame_action_guard(input_text)
+    if strategy_guidance:
+        return "\n\n".join(
+            [
+                "你是 Baiou 高框架推拉模式的回复生成器。只输出合法 JSON，不要 Markdown。",
+                HIGH_FRAME_SCOPE_RULE,
+                HIGH_FRAME_CORE_RULE,
+                HIGH_FRAME_FORBID_RULE,
+                "生成要求：最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；优先 8-24 个汉字，最多一个逗号；不要解释策略，不要写多选项，不要长篇。",
+                "高框架不是讲道理：不要把标准、边界、感觉同频写成教练式解释；能用半句拉扯解决，就不要写成论证。",
+                "暧昧奖励：对方索要补偿、奖励、亲亲、陪伴或撒娇时，先给一点甜头/画面感，再轻轻设置条件，避免只有门槛没有情绪价值。",
+                "对象调侃：对方提到具体物件、食物、表情、地点、药品时，先抓对象特征做轻损、纠偏或暧昧联想；不要用空泛门槛替代现场感。",
+                "策略门工作方式：上面的 strategy 是唯一决策点，不得反向改变策略。",
+                "表达手感：松弛、有框架、有一点暧昧或拉扯；不强怼、不油腻、不羞辱、不装导师。",
+                "边界：如果策略门或当前输入显示明确停止/不舒服/不要继续，只收住当前推进并轻轻转话题。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                action_guard,
+                "策略门决策结果：",
+                json.dumps(strategy_guidance, ensure_ascii=False, indent=2),
+                "知识库使用：百炼 file_search 只找表达参考和人味；当前输入和策略门优先，不照搬案例原句、称呼、强度。",
+                "检索软约束：优先只使用策略门 rag_query 作为知识库查询意图；不要把同一意图拆成多条同义查询，也不要扩展成泛泛的高框架、推拉、聊天话术等宽泛查询。",
+                "当前输入：",
+                input_text,
+                "输出结构：",
+                json.dumps(
+                    {
+                        "reply": "一句可直接发送的中文回复",
+                        "coach_analysis": "一句话说明用了什么动作",
+                        "labels": {
+                            "聊天阶段": "",
+                            "接触状态": "",
+                            "关系推进目标": "",
+                            "女生状态": "",
+                            "男生目标": "",
+                            "推荐策略": "",
+                            "风险类型": [],
+                            "回复强度": "",
+                            "高热度信号": "",
+                        },
+                        "risk_warning": "",
+                        "next_step": "",
+                        "reference_segments": [],
+                        "debug": {"prompt_version": "high_frame_strategy_quality_v01"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            ]
+        )
+    if not quality_guidance and not strategy_mode:
+        return "\n\n".join(
+            [
+                "你是 Baiou 日常快速回复助手。只输出合法 JSON，不要 Markdown。",
+                DAILY_FAST_SCOPE_RULE,
+                DAILY_FAST_CORE_RULE,
+                DAILY_FAST_FORBID_RULE,
+                "生成要求：最终 reply 只能是一句中文短回复，优先 8-22 个汉字，最多一个逗号；自然、松弛、好接，不输出多选项和解释。",
+                "模式区分：遇到明显筛选、推开、挑战、强暧昧、主动邀约拉扯时，不要启动高张力破解，只给低压力承接或轻轻带过；用户要高框架时由策略质量模式处理。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                action_guard,
+                "知识库使用：百炼 file_search 只找日常聊天表达参考；检索围绕对方最后一句、当前话题、情绪状态和轻松接话，不扩展成废物测试、高框架、推拉、进攻。",
+                "当前输入：",
+                input_text,
+                "输出结构：",
+                json.dumps(
+                    {
+                        "reply": "一句可直接发送的中文回复",
+                        "coach_analysis": "一句话说明如何低压力接话",
+                        "labels": {
+                            "聊天阶段": "",
+                            "接触状态": "",
+                            "关系推进目标": "",
+                            "女生状态": "",
+                            "男生目标": "",
+                            "推荐策略": "",
+                            "风险类型": [],
+                            "回复强度": "",
+                            "高热度信号": "",
+                        },
+                        "risk_warning": "",
+                        "next_step": "",
+                        "reference_segments": [],
+                        "debug": {"prompt_version": "daily_fast_v01"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            ]
+        )
+    principles = load_config("prompt_principles.json")
     parts = [
         load_prompt("reply_generate_v01.md"),
         "原则：",
@@ -610,27 +722,6 @@ def build_bailian_rag_prompt(
                 "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。检索词优先围绕女生/对方最后一句、当前句功能、推进尺度、建议手感和关键事实；不要主动加入“废物测试/强框架/反击”等词，除非软锚点判断为明确测试或证据很强。当前截图事实优先于召回片段；召回片段只学习动作和节奏，不继承其强度、称呼或原句。",
                 "相似结构化案例片段：",
                 "由百炼 file_search 工具返回；如果没有命中，也要基于软锚点和原则给出自然、可推进的回复。",
-            ]
-        )
-    elif strategy_guidance:
-        parts.extend(
-            [
-                "策略门决策结果：",
-                json.dumps(strategy_guidance, ensure_ascii=False, indent=2),
-                "策略门工作方式：",
-                "上面的 strategy 是唯一决策点。你必须按该策略生成回复；百炼 file_search 只用于找表达参考、说法节奏和人味，不得反向改变策略、不继承案例强度、不照搬称呼或原句。",
-                TEXT_STRUCTURED_INPUT_RULE,
-                FRAME_ACTION_RULE,
-                FRAME_ACTION_DETAIL_RULE,
-                action_guard,
-                RELATIONSHIP_PACE_RULE,
-                RELATIONSHIP_PACE_MODE_HINTS["strategy_quality"],
-                "知识库检索要求：",
-                "检索词优先围绕女生/对方最后一句、策略、style_hint、forbid 和关键事实。当前截图事实和策略门决策优先于召回片段；没有命中也要按策略生成一句自然可发的回复。",
-                "输出要求：",
-                "最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；coach_analysis 简短说明策略即可，不要输出长报告。",
-                "相似结构化案例片段：",
-                "由百炼 file_search 工具返回；只作为表达参考。",
             ]
         )
     elif strategy_mode:
@@ -696,10 +787,15 @@ def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") ->
         return heuristic_strategy_guidance(input_text, heuristic_labels(input_text))
     labels = extract_labels(parsed)
     state = parsed.get("state", {}) if isinstance(parsed.get("state", {}), dict) else {}
+    scene_type = normalize_choice(
+        parsed.get("scene_type"),
+        ["提问破解", "筛选标准", "推开否定", "主动邀约拉扯", "关系节奏测试", "极短追问", "事实纠偏", "现实状态边界", "暧昧进攻", "其他"],
+    )
     strategy = normalize_choice(
         parsed.get("strategy"),
         ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
     )
+    rag_query = normalize_strategy_rag_query(parsed.get("rag_query")) or fallback_strategy_rag_query(input_text, scene_type or "其他", strategy or "轻承接")
     output = {
         "state": {
             "关系阶段": normalize_choice(state.get("关系阶段"), ["刚认识", "破冰期", "熟悉期", "暧昧升温期", "高意向推进期"]),
@@ -707,7 +803,9 @@ def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") ->
             "当前压力": normalize_choice(state.get("当前压力"), ["低", "中", "高"]),
             "互动活跃度": normalize_choice(state.get("互动活跃度"), ["低", "中", "高"]),
         },
+        "scene_type": scene_type or "其他",
         "strategy": strategy or "轻承接",
+        "rag_query": rag_query,
         "reason": str(parsed.get("reason", "")).strip(),
         "risk_level": normalize_choice(parsed.get("risk_level"), ["低", "中", "高"]) or "低",
         "forbid": [str(item).strip() for item in parsed.get("forbid", []) if str(item).strip()] if isinstance(parsed.get("forbid", []), list) else [],
@@ -718,18 +816,39 @@ def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") ->
     return {key: value for key, value in output.items() if value not in ("", [], {})}
 
 
+def normalize_strategy_rag_query(value: Any) -> str:
+    raw = value[0] if isinstance(value, list) and value else value
+    text = str(raw or "").strip()
+    for separator in ["，", "、", ",", ";", "；", "\n", "\r", "\t"]:
+        text = text.replace(separator, " ")
+    text = " ".join(part for part in text.split() if part)
+    return text[:32]
+
+
+def fallback_strategy_rag_query(input_text: str, scene_type: str, strategy: str) -> str:
+    if is_relationship_pace_test(input_text):
+        scene_type = "关系节奏测试"
+    elif any(cue in input_text for cue in ["出来吃饭", "带我吃", "带我去吃", "走 帅哥"]):
+        scene_type = "主动邀约拉扯"
+    elif any(cue in input_text for cue in ["撩不到", "没机会", "不可能"]):
+        scene_type = "推开否定"
+    elif any(cue in input_text for cue in ["和谁", "跟谁"]):
+        scene_type = "极短追问"
+    return normalize_strategy_rag_query(f"{scene_type} {strategy}")
+
+
 def heuristic_strategy_guidance(text: str, labels: dict[str, Any]) -> dict[str, Any]:
     female_state = labels.get("女生状态", "")
     if is_relationship_pace_test(text):
-        strategy, pressure, style, forbid = "轻推进", "中", "有边界地推进", ["顺从式退让", "道歉自证", "长篇解释"]
+        strategy, pressure, style, forbid, scene_type = "轻推进", "中", "有边界地推进", ["顺从式退让", "道歉自证", "长篇解释"], "关系节奏测试"
     elif female_state in {"冷淡", "防御", "拒绝"}:
-        strategy, pressure, style, forbid = "轻撤退", "高", "降压", ["强撩", "连续追问", "强邀约"]
+        strategy, pressure, style, forbid, scene_type = "轻撤退", "高", "降压", ["强撩", "连续追问", "强邀约"], "现实状态边界"
     elif any(word in text for word in ["想你", "想和你聊", "喜欢", "宝宝", "礼物"]):
-        strategy, pressure, style, forbid = "暧昧试探", "低", "暧昧但不油", ["长篇解释", "过度讨好"]
+        strategy, pressure, style, forbid, scene_type = "暧昧试探", "低", "暧昧但不油", ["长篇解释", "过度讨好"], "暧昧进攻"
     elif any(word in text for word in ["嗯嗯", "好的", "知道啦"]):
-        strategy, pressure, style, forbid = "轻撤退", "中", "自然", ["强行暧昧", "连续追问"]
+        strategy, pressure, style, forbid, scene_type = "轻撤退", "中", "自然", ["强行暧昧", "连续追问"], "其他"
     else:
-        strategy, pressure, style, forbid = "轻承接", "低", "松弛", ["查户口", "长篇大论"]
+        strategy, pressure, style, forbid, scene_type = "轻承接", "低", "松弛", ["查户口", "长篇大论"], "其他"
     return {
         "state": {
             "关系阶段": labels.get("聊天阶段", "熟悉期"),
@@ -737,7 +856,9 @@ def heuristic_strategy_guidance(text: str, labels: dict[str, Any]) -> dict[str, 
             "当前压力": pressure,
             "互动活跃度": "中",
         },
+        "scene_type": scene_type,
         "strategy": strategy,
+        "rag_query": fallback_strategy_rag_query(text, scene_type, strategy),
         "reason": "dry-run 启发式策略判断。",
         "risk_level": "中" if pressure == "高" else "低",
         "forbid": forbid,

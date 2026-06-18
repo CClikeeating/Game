@@ -10,8 +10,6 @@
     "web_site_daily_quota": 500,
     "mode_unit_costs": {
       "bailian_rag_fast": 1,
-      "bailian_rag_quality": 2,
-      "bailian_rag_strategy_fast": 1,
       "bailian_rag_strategy_quality": 2
     },
     "max_images_per_reply": 3,
@@ -21,10 +19,8 @@
   "runtime": {
     "default_mode": "bailian_rag_fast",
     "modes": {
-      "bailian_rag_fast": "快速模式",
-      "bailian_rag_quality": "质量模式",
-      "bailian_rag_strategy_fast": "策略实验模式",
-      "bailian_rag_strategy_quality": "策略质量模式"
+      "bailian_rag_fast": "日常接话",
+      "bailian_rag_strategy_quality": "暧昧推荐"
     }
   },
   "auth": {"default_user_id": "dev_user", "dev_login_enabled": true, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},

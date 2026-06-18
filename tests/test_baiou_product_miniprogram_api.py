@@ -140,11 +140,13 @@ def test_web_alpha_access_code_creates_session_without_exposing_code(monkeypatch
     assert "正在理解截图" in html
     assert "正在生成回复" in html
     assert "已等待" in html
-    assert "会更慢，消耗 2 次额度" in html
-    assert "策略实验模式" in html
-    assert "速度接近快速" in html
-    assert "策略质量" in html
-    assert "显式策略" in html
+    assert "日常接话" in html
+    assert "安全无压力，接住话题" in html
+    assert "暧昧推荐" in html
+    assert "破解测试，高框架推拉" in html
+    assert "文字接话" in html
+    assert "bailian_rag_quality" not in html
+    assert "bailian_rag_strategy_fast" not in html
     assert "test-code" not in html
     assert denied.status_code == 401
     assert dev_login.status_code == 401
@@ -210,7 +212,7 @@ def test_web_ip_quota_uses_mode_unit_cost_and_dry_run_is_free(monkeypatch, tmp_p
         web_access_codes=["test-code"],
         web_ip_daily_quota=3,
         web_site_daily_quota=10,
-        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_strategy_quality": 2},
     )
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
     login = client.post("/api/v1/auth/web-login", json={"access_code": "test-code"}).get_json()
@@ -220,17 +222,17 @@ def test_web_ip_quota_uses_mode_unit_cost_and_dry_run_is_free(monkeypatch, tmp_p
     dry = client.post(
         "/api/v1/replies",
         headers=headers,
-        json={"conversation_id": conv, "question": "dry", "mode": "bailian_rag_quality", "dry_run": True},
+        json={"conversation_id": conv, "question": "dry", "mode": "bailian_rag_strategy_quality", "dry_run": True},
     )
     first = client.post(
         "/api/v1/replies",
         headers=headers,
-        json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_quality"},
+        json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_strategy_quality"},
     )
     second = client.post(
         "/api/v1/replies",
         headers=headers,
-        json={"conversation_id": conv, "question": "two", "mode": "bailian_rag_quality"},
+        json={"conversation_id": conv, "question": "two", "mode": "bailian_rag_strategy_quality"},
     )
 
     assert dry.status_code == 200
@@ -290,7 +292,7 @@ def test_text_only_reply_allows_no_image_and_forces_fast_mode(monkeypatch, tmp_p
     config = make_config(
         tmp_path,
         min_images_per_reply=1,
-        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_strategy_quality": 2},
     )
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
@@ -301,7 +303,7 @@ def test_text_only_reply_allows_no_image_and_forces_fast_mode(monkeypatch, tmp_p
         json={
             "conversation_id": conv,
             "question": "女生说：刚到家，有点累",
-            "mode": "bailian_rag_quality",
+            "mode": "bailian_rag_strategy_quality",
             "input_type": "text_only",
         },
     )
@@ -521,11 +523,11 @@ def test_admin_site_quota_reports_used_and_remaining(monkeypatch, tmp_path: Path
         tmp_path,
         admin_token="admin-secret",
         web_site_daily_quota=3,
-        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_quality": 2},
+        mode_unit_costs={"bailian_rag_fast": 1, "bailian_rag_strategy_quality": 2},
     )
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
-    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_quality"})
+    client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_strategy_quality"})
 
     stats = client.get("/api/v1/admin/stats", headers=admin_headers()).get_json()["stats"]
 
@@ -542,11 +544,11 @@ def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) ->
         "/api/v1/admin/config",
         headers=admin_headers(),
         json={
-            "runtime": {"default_mode": "bailian_rag_quality"},
+            "runtime": {"default_mode": "bailian_rag_strategy_quality"},
             "rag": {"vector_store_ids": "new_store", "max_num_results": 4},
             "limits": {
                 "daily_reply_quota": 33,
-                "mode_unit_costs": {"bailian_rag_strategy_fast": 2, "bailian_rag_strategy_quality": 3},
+                "mode_unit_costs": {"bailian_rag_fast": 1, "bailian_rag_strategy_quality": 3},
                 "max_images_per_reply": 4,
                 "min_images_per_reply": 1,
                 "max_image_mb": 9,
@@ -561,12 +563,12 @@ def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) ->
 
     assert response.status_code == 200
     assert Path(data["saved"]).exists()
-    assert current["runtime"]["default_mode"] == "bailian_rag_quality"
+    assert current["runtime"]["default_mode"] == "bailian_rag_strategy_quality"
     assert current["rag"]["vector_store_ids"] == ["new_store"]
     assert current["rag"]["max_num_results"] == 4
     assert current["limits"]["daily_reply_quota"] == 33
-    assert current["limits"]["mode_unit_costs"]["bailian_rag_strategy_fast"] == 2
+    assert current["limits"]["mode_unit_costs"]["bailian_rag_fast"] == 1
     assert current["limits"]["mode_unit_costs"]["bailian_rag_strategy_quality"] == 3
     assert current["retention"]["run_days"] == 45
     assert current["announcement"]["title"] == "notice"
-    assert health["default_mode"] == "bailian_rag_quality"
+    assert health["default_mode"] == "bailian_rag_strategy_quality"

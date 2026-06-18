@@ -239,10 +239,8 @@ PAGE = """<!doctype html>
             <div class="field">
               <div class="label">模式</div>
               <div class="mode-row">
-                <button class="mode active" type="button" data-mode="bailian_rag_fast">快速<small>日常够用</small></button>
-                <button class="mode" type="button" data-mode="bailian_rag_quality">质量<small>会更慢，消耗 2 次额度</small></button>
-                <button class="mode" type="button" data-mode="bailian_rag_strategy_fast">策略<small>实验模式，速度接近快速</small></button>
-                <button class="mode" type="button" data-mode="bailian_rag_strategy_quality">策略质量<small>显式策略，消耗 2 次额度</small></button>
+                <button class="mode active" type="button" data-mode="bailian_rag_fast">日常接话<small>安全无压力，接住话题</small></button>
+                <button class="mode" type="button" data-mode="bailian_rag_strategy_quality">暧昧推荐<small>破解测试，高框架推拉</small></button>
               </div>
             </div>
             <div class="actions">
@@ -267,7 +265,7 @@ PAGE = """<!doctype html>
     const state = {
       token: localStorage.getItem("baiou_web_token") || "",
       conversation: null,
-      mode: boot.defaultMode || "bailian_rag_fast",
+      mode: ["bailian_rag_fast", "bailian_rag_strategy_quality"].includes(boot.defaultMode) ? boot.defaultMode : "bailian_rag_fast",
       entry: "text_only",
       lastRun: null,
       limits: boot.limits || {},
@@ -314,13 +312,11 @@ PAGE = """<!doctype html>
       const mode = state.entry === "text_only" ? "bailian_rag_fast" : state.mode;
       const cost = costs[mode] || 1;
       if (state.entry === "text_only") {
-        $("#modeCost").textContent = `文字极速，本次消耗 ${cost}`;
-      } else if (state.mode === "bailian_rag_quality") {
-        $("#modeCost").textContent = `质量模式：更慢，消耗 ${cost} 次额度`;
-      } else if (state.mode === "bailian_rag_strategy_fast") {
-        $("#modeCost").textContent = `策略实验：消耗 ${cost} 次额度`;
+        $("#modeCost").textContent = `文字接话，本次消耗 ${cost}`;
+      } else if (state.mode === "bailian_rag_fast") {
+        $("#modeCost").textContent = `日常接话，本次消耗 ${cost}`;
       } else if (state.mode === "bailian_rag_strategy_quality") {
-        $("#modeCost").textContent = `策略质量：更慢，消耗 ${cost} 次额度`;
+        $("#modeCost").textContent = `暧昧推荐，本次消耗 ${cost}`;
       } else {
         $("#modeCost").textContent = `本次消耗 ${cost}`;
       }
@@ -396,6 +392,7 @@ PAGE = """<!doctype html>
       }
     }
     function selectMode(mode) {
+      if (!["bailian_rag_fast", "bailian_rag_strategy_quality"].includes(mode)) mode = "bailian_rag_fast";
       state.mode = mode;
       document.querySelectorAll("button.mode").forEach(button => button.classList.toggle("active", button.dataset.mode === mode));
       updateModeCost();

@@ -49,10 +49,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "runtime": {
         "default_mode": MODE_BAILIAN_RAG_FAST,
         "modes": {
-            MODE_BAILIAN_RAG_FAST: "快速模式",
-            MODE_BAILIAN_RAG_QUALITY: "质量模式",
-            MODE_BAILIAN_RAG_STRATEGY_FAST: "策略实验模式",
-            MODE_BAILIAN_RAG_STRATEGY_QUALITY: "策略质量模式",
+            MODE_BAILIAN_RAG_FAST: "日常接话",
+            MODE_BAILIAN_RAG_STRATEGY_QUALITY: "暧昧推荐",
         },
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
@@ -474,8 +472,6 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
             os.environ.get("BAIOU_MODE_UNIT_COSTS") or limits.get("mode_unit_costs"),
             {
                 MODE_BAILIAN_RAG_FAST: 1,
-                MODE_BAILIAN_RAG_QUALITY: 2,
-                MODE_BAILIAN_RAG_STRATEGY_FAST: 1,
                 MODE_BAILIAN_RAG_STRATEGY_QUALITY: 2,
             },
         ),
@@ -765,18 +761,6 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
                 MODE_BAILIAN_RAG_FAST: bounded_int(
                     (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
                     mode_unit_cost(config, MODE_BAILIAN_RAG_FAST),
-                    1,
-                    100,
-                ),
-                MODE_BAILIAN_RAG_QUALITY: bounded_int(
-                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_QUALITY) if isinstance(limits.get("mode_unit_costs"), dict) else None,
-                    mode_unit_cost(config, MODE_BAILIAN_RAG_QUALITY),
-                    1,
-                    100,
-                ),
-                MODE_BAILIAN_RAG_STRATEGY_FAST: bounded_int(
-                    (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_STRATEGY_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
-                    mode_unit_cost(config, MODE_BAILIAN_RAG_STRATEGY_FAST),
                     1,
                     100,
                 ),
@@ -1279,10 +1263,8 @@ def admin_page_html() -> str:
           <div class="fields">
             <label>默认模式
               <select name="default_mode">
-                <option value="bailian_rag_fast">百炼快速模式</option>
-                <option value="bailian_rag_quality">百炼质量模式</option>
-                <option value="bailian_rag_strategy_fast">策略实验模式</option>
-                <option value="bailian_rag_strategy_quality">策略质量模式</option>
+                <option value="bailian_rag_fast">日常接话</option>
+                <option value="bailian_rag_strategy_quality">暧昧推荐</option>
               </select>
             </label>
             <label>百炼知识库 ID
@@ -1300,16 +1282,10 @@ def admin_page_html() -> str:
             <label>全站每日额度
               <input name="web_site_daily_quota" type="number" min="0">
             </label>
-            <label>快速模式扣费
+            <label>日常接话扣费
               <input name="fast_unit_cost" type="number" min="1">
             </label>
-            <label>质量模式扣费
-              <input name="quality_unit_cost" type="number" min="1">
-            </label>
-            <label>策略实验扣费
-              <input name="strategy_unit_cost" type="number" min="1">
-            </label>
-            <label>策略质量扣费
+            <label>暧昧推荐扣费
               <input name="strategy_quality_unit_cost" type="number" min="1">
             </label>
             <label>最大会话数
@@ -1456,8 +1432,6 @@ def admin_page_html() -> str:
       form.web_ip_daily_quota.value = cfg.limits.web_ip_daily_quota || 0;
       form.web_site_daily_quota.value = cfg.limits.web_site_daily_quota || 0;
       form.fast_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_fast || 1;
-      form.quality_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_quality || 2;
-      form.strategy_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_strategy_fast || 1;
       form.strategy_quality_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_strategy_quality || 2;
       form.max_conversations_per_user.value = cfg.limits.max_conversations_per_user || 5;
       form.history_turns_for_reply.value = cfg.limits.history_turns_for_reply || 6;
@@ -1563,8 +1537,6 @@ def admin_page_html() -> str:
           web_site_daily_quota: form.web_site_daily_quota.value,
           mode_unit_costs: {
             bailian_rag_fast: form.fast_unit_cost.value,
-            bailian_rag_quality: form.quality_unit_cost.value,
-            bailian_rag_strategy_fast: form.strategy_unit_cost.value,
             bailian_rag_strategy_quality: form.strategy_quality_unit_cost.value,
           },
           max_conversations_per_user: form.max_conversations_per_user.value,

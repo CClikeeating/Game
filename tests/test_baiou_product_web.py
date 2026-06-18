@@ -32,9 +32,10 @@ def test_baiou_web_default_mode_is_bailian_rag_fast(monkeypatch, tmp_path: Path)
     config = web_app.load_web_config()
 
     assert config["default_mode"] == "bailian_rag_fast"
-    assert "quality_local" in config["modes"]
-    assert "bailian_rag_quality" in config["modes"]
-    assert "bailian_rag_strategy_fast" in config["modes"]
+    assert config["modes"] == {
+        "bailian_rag_fast": "日常接话",
+        "bailian_rag_strategy_quality": "暧昧推荐",
+    }
     assert "bailian_rag_strategy_quality" in config["modes"]
 
 
@@ -70,7 +71,7 @@ def test_baiou_web_run_uses_product_runtime(monkeypatch, tmp_path: Path) -> None
         data={
             "question": "怎么回？",
             "context": "刚认识",
-            "mode": "quality_local",
+            "mode": "bailian_rag_strategy_quality",
             "dry_run": "on",
             "images": [(BytesIO(b"fake image bytes"), "chat.jpg")],
         },
@@ -80,7 +81,7 @@ def test_baiou_web_run_uses_product_runtime(monkeypatch, tmp_path: Path) -> None
     assert response.status_code == 200
     assert captured["question"] == "怎么回？"
     assert captured["context"] == "刚认识"
-    assert captured["mode"] == "quality_local"
+    assert captured["mode"] == "bailian_rag_strategy_quality"
     assert captured["dry_run"] is True
     assert captured["images"]
     assert Path(captured["images"][0]).exists()
