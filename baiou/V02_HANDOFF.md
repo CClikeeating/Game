@@ -180,6 +180,37 @@ bailian_rag_fast: cheaper, safer, more conservative, can recall a less precise s
 bailian_rag_quality: quality-label anchor + Bailian RAG, usually more accurate and slightly more proactive
 ```
 
+Later product direction: split technical route from user-facing reply style.
+
+Current modes are mostly implementation routes:
+
+```text
+bailian_rag_fast: screenshot/text -> Bailian RAG -> reply, fewer model calls
+bailian_rag_quality: screenshot/text -> lightweight quality labels -> Bailian RAG -> reply
+bailian_rag_strategy_fast: screenshot/text -> strategy gate inside RAG prompt -> Bailian RAG -> reply
+bailian_rag_strategy_quality: screenshot/text -> separate strategy label model -> Bailian RAG -> reply
+text-only fast entry: no screenshot understanding, direct text -> Bailian RAG fast reply
+```
+
+For the real product, avoid exposing these as the only user choice. The user usually wants to choose a communication style, not an internal chain. A future branch should compare the technical routes first, keep the best one or two, and then layer configurable reply-style templates on top.
+
+Candidate user-facing style templates:
+
+```text
+natural chat: normal, relaxed, humorous, light flirt only when safe
+safe/respectful: low pressure, boundary-aware, best for uncertain context
+active push: higher frame, more teasing and proactive, avoids surrendering ambiguous tests
+bold flirt: more aggressive/tension-oriented, but still gated by explicit boundary/refusal rules
+```
+
+Important architecture note:
+
+```text
+technical route != reply style
+```
+
+Do not keep adding every strategy into one giant prompt. Prefer a small base prompt plus a configurable style overlay, for example `reply_styles.json`, where each style owns tone, allowed pressure, examples, forbidden moves, and boundary policy. The base judge still must detect hard safety/boundary cases first, so "bold" styles cannot ignore explicit refusal, and "safe" styles should not automatically surrender pushback tests such as "we are moving too fast" when there is no clear stop/refusal evidence.
+
 Product prompt notes already added:
 
 ```text
