@@ -65,6 +65,78 @@ IMAGE_INPUT_HINT = (
     "默认左侧/白色气泡=女生或对方，右侧/绿色气泡=男生或用户。"
 )
 
+RELATIONSHIP_PACE_CUES = [
+    "发展太快",
+    "太快了",
+    "是不是太快",
+    "会不会太快",
+    "进展太快",
+    "节奏太快",
+    "才认识几天",
+    "刚认识几天",
+    "认识几天就在一起",
+]
+
+CLEAR_BOUNDARY_CUES = [
+    "我不想这样",
+    "不想这样",
+    "别这样",
+    "不要这样",
+    "我不舒服",
+    "不舒服",
+    "先别推进",
+    "先别说",
+    "不要再说",
+    "别说了",
+    "不想聊这个",
+    "别聊这个",
+    "不想继续",
+    "到此为止",
+]
+
+RELATIONSHIP_PACE_RULE = (
+    "关系节奏质疑不能进入顺从模式：女生说“发展太快”“是不是太快了”“才认识几天就在一起了”等，"
+    "如果没有明确停止、拒绝或不舒服证据，不要默认回复“好，听你的”“按你的节奏来”“那我们慢一点”；"
+    "也不要用“快慢不重要”“快慢是相对的”这类否定式开头。优先学习可迁移的“反抛定义权”动作：不接受对方预设结论，"
+    "把对方的表层判断拆成“表面维度”和“背后担忧”，用一个短问题把定义权拿回来，再用更高层标准重定义局势。"
+    "更高层标准要贴合上下文，可从认真程度、舒服程度、确定感、相处质量、边界感、投入一致性中选择，不要固定套某一句。"
+    "没有明确边界时，labels 不要标成女生状态=防御/拒绝、男生目标=降压、"
+    "推荐策略=主动降压。明确边界时只收住当前推进并转移话题，不道歉自证、不交出整体框架。"
+)
+
+RELATIONSHIP_PACE_MODE_HINTS = {
+    "fast": "快速模式表达差异：关系节奏质疑优先给一句短反抛，只拿回定义权，不展开解释。",
+    "quality": "质量模式表达差异：关系节奏质疑优先用“短反抛 + 轻重定义”，允许比快速模式多半句标准重定义。",
+    "strategy_fast": "策略实验模式表达差异：关系节奏质疑可以更松弛一点，用反抛问题把表层质疑转成背后担忧。",
+    "strategy_quality": "策略质量模式表达差异：关系节奏质疑用稳一点的反抛定义权，并明确更高层评价标准。",
+}
+
+TEXT_STRUCTURED_INPUT_RULE = (
+    "文本结构输入规则：如果当前输入已经包含 turn_ 对话行、女生/对方最后一句、文本评测入口或文本极速入口，"
+    "就把这些文字当作完整当前聊天依据；禁止要求用户再上传截图、图片或聊天记录，也不要说缺少上下文。"
+)
+
+FRAME_ACTION_RULE = (
+    "话语动作优先于字面接话：先判断女生这句话是在索取理由、筛选标准、推开否定、主动邀约、索要补偿、极短追问、"
+    "玩笑命令、示弱分享还是普通承接，再选动作。索取理由时不要自证，转成关系张力或选择困境；筛选标准时回答事实并保留自有标准，"
+    "不要表现成只为她改变；推开否定时不要顺势后撤，优先拿回定义权或轻推回去；主动邀约或命令不必总是立即接受，可用轻推开、"
+    "反客为主或设置自己的标准保持框架；极短追问优先极短直给，不为了显聪明而加包装；玩笑对象明确时优先围绕对象做轻损调侃，"
+    "不要变成后勤安排；示弱或状态分享先接住状态，避免查户口和说教。"
+)
+
+FRAME_ACTION_DETAIL_RULE = (
+    "动作子规则要可迁移而不是套例句：极短追问如果只是补全上一句的对象、归属或态度，先直给核心信息，"
+    "不要用反问、你猜、吃醋了等包装盖过答案；如果缺少可恢复上下文，短人称追问优先回到当前暧昧对象或接收者，"
+    "不要凭空引入第三方。女生主动邀约、命令或高主动推进时，不要只接安排，先保留选择权，"
+    "可标记她的主动、反客为主、设一点自己的标准，再给方向；如果她抛出低价值或太顺手的玩法，可以拒绝原方案并换成更有吸引力的具体方案。"
+    "女生把你定义成太急、太渣、太主动或太容易时，不要解释自证，也不要只反问，要给出自己的选择标准，"
+    "把判断标准转回选择感、感觉、投入一致性和自有边界；女生用“撩不到/没机会/不可能”等否定你时，不要自我撤退，"
+    "优先否定她的预设或把筛选权拿回来。女生误读你评价的对象时，事实纠偏优先级高于夸奖和哄，先纠正指代再轻调侃。"
+    "女生处在上课、忙、身体不适等现实状态时，先收住当前干扰，再留一个低压力的具体后续钩子；"
+    "女生表达愿意等你、分享快乐或照顾互动节奏时，先接住这份投入，再把话题引到她当下可分享的具体内容，"
+    "不要反过来筛选她够不够甜、够不够有趣。已有玩笑空间或暧昧承接时可以更大胆一点，但必须短、自然、有兜底。"
+)
+
 
 def run_reply(
     question: str,
@@ -133,7 +205,7 @@ def run_reply(
     reply_prompt = build_reply_prompt(input_text, labels, references)
     reply_result = reply_client.chat_json("只输出合法 JSON。", reply_prompt)
     parsed = reply_result.get("parsed", {}) if isinstance(reply_result.get("parsed"), dict) else {}
-    result = normalize_reply_result(parsed, labels, references)
+    result = normalize_reply_result(parsed, labels, references, input_text)
     summary = {
         "status": reply_result.get("status", ""),
         "mode": runtime_mode,
@@ -249,7 +321,7 @@ def run_bailian_rag_fast(
     parsed = parsed if isinstance(parsed, dict) else {}
     references = compact_rag_references(reply_result.get("references", []))
     labels = extract_labels(parsed)
-    answer = normalize_reply_result(parsed, labels, references)
+    answer = normalize_reply_result(parsed, labels, references, input_text)
     summary = {
         "status": reply_result.get("status", ""),
         "mode": mode_name,
@@ -369,6 +441,7 @@ def build_label_prompt(input_text: str) -> str:
 def build_quality_label_prompt(input_text: str) -> str:
     taxonomy = load_config("taxonomy_v01.json")
     principles = load_config("prompt_principles.json")
+    action_guard = build_frame_action_guard(input_text)
     return "\n\n".join(
         [
             load_prompt("reply_quality_label_v01.md"),
@@ -376,14 +449,63 @@ def build_quality_label_prompt(input_text: str) -> str:
             json.dumps(prompt_taxonomy_config(taxonomy), ensure_ascii=False, indent=2),
             "原则：",
             json.dumps(principles, ensure_ascii=False, indent=2),
+            action_guard,
             "当前输入：",
             input_text,
         ]
     )
 
 
+def build_frame_action_guard(input_text: str) -> str:
+    guards: list[str] = []
+    if "和谁" in input_text or "跟谁" in input_text:
+        guards.append(
+            "短人称追问强提醒：当前句只是在索要对象/归属时，回复必须先直给核心对象；"
+            "除非上下文明确有第三方，否则不要凭空答第三方，也不要用反问、猜测或吃醋包装替代答案。"
+        )
+    if any(cue in input_text for cue in ["撩不到", "没机会", "不可能"]):
+        guards.append(
+            "否定预设强提醒：对方否定你或说你没机会时，不要自我撤退、不要回成自己省事或懒得推进；"
+            "优先否定她的预设、拿回筛选权或把互动转成她需要证明的方向。"
+        )
+    if "表情包" in input_text and "傻" in input_text:
+        guards.append(
+            "事实纠偏强提醒：对方误以为你在评价她本人时，先纠正评价对象，再轻调侃；"
+            "事实纠偏优先于夸可爱、哄人或顺着误会升温。"
+        )
+    if "上课" in input_text or "偷偷玩" in input_text:
+        guards.append(
+            "现实状态强提醒：对方在上课或类似场景里想继续玩时，先收住当前干扰，不鼓励她分心；"
+            "再给一个低压力、具体的课后/结束后后续钩子，不要只停留在惩罚式角色梗。"
+        )
+    if "手拉手" in input_text and "操场" in input_text:
+        guards.append(
+            "方案置换强提醒：对方抛出低价值或太顺手的玩法时，可以拒绝原方案，但要换成更有吸引力的具体方案；"
+            "不要只用看表现、够不够格这类空泛筛选结束。"
+        )
+    if any(cue in input_text for cue in ["出来吃饭", "走 帅哥", "带我吃", "带我去吃"]):
+        guards.append(
+            "主动邀约强提醒：对方高主动邀约或命令时，不能只说行、走、可以、这顿谁请；"
+            "先保留选择权或反客为主，再决定是否给具体方向。"
+        )
+    if any(cue in input_text for cue in ["太急", "很渣", "显得很渣", "太主动"]):
+        guards.append(
+            "负面定义强提醒：对方把你定义成太急、太渣或太主动时，不要只反问她怕什么；"
+            "回复里要出现自己的选择标准、感觉标准或边界标准。"
+        )
+    if "分享快乐" in input_text or ("等你" in input_text and "忙" in input_text):
+        guards.append(
+            "承接投入强提醒：对方表达愿意等你或分享快乐时，先接住这份投入，再让她分享当下具体内容；"
+            "不要反过来筛选她够不够甜、够不够有趣、够不够分量。"
+        )
+    if not guards:
+        return ""
+    return "当前动作强提醒：\n" + "\n".join(f"- {guard}" for guard in guards)
+
+
 def build_strategy_label_prompt(input_text: str) -> str:
     principles = load_config("prompt_principles.json")
+    action_guard = build_frame_action_guard(input_text)
     return "\n\n".join(
         [
             "你是 Baiou 策略门实验模式的轻量策略决策助手。",
@@ -392,6 +514,11 @@ def build_strategy_label_prompt(input_text: str) -> str:
             "RAG 后续只会做表达参考，所以你必须独立给出策略；不要依赖案例来决定局势。",
             "策略枚举：轻承接、轻推进、轻撤退、暧昧试探、高张力推进、转移话题、风险提醒。",
             "高张力推进边界：只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
+            TEXT_STRUCTURED_INPUT_RULE,
+            FRAME_ACTION_RULE,
+            FRAME_ACTION_DETAIL_RULE,
+            action_guard,
+            RELATIONSHIP_PACE_RULE,
             "状态字段枚举：关系阶段=刚认识/破冰期/熟悉期/暧昧升温期/高意向推进期；对方投入度=低/中/高；当前压力=低/中/高；互动活跃度=低/中/高。",
             "原则：",
             json.dumps(principles, ensure_ascii=False, indent=2),
@@ -458,6 +585,7 @@ def build_bailian_rag_prompt(
     strategy_guidance: dict[str, Any] | None = None,
 ) -> str:
     principles = load_config("prompt_principles.json")
+    action_guard = build_frame_action_guard(input_text)
     parts = [
         load_prompt("reply_generate_v01.md"),
         "原则：",
@@ -472,6 +600,12 @@ def build_bailian_rag_prompt(
                 json.dumps(quality_guidance, ensure_ascii=False, indent=2),
                 "软锚点使用方式：",
                 "软锚点用于减少过度解读，不是保守限制。保持自然、有趣、可推进；推进空间低时降低强撩和强邀约，推进空间中/高时可以轻微升温、暧昧试探或边界内的性张力玩笑。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                FRAME_ACTION_RULE,
+                FRAME_ACTION_DETAIL_RULE,
+                action_guard,
+                RELATIONSHIP_PACE_RULE,
+                RELATIONSHIP_PACE_MODE_HINTS["quality"],
                 "知识库检索要求：",
                 "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。检索词优先围绕女生/对方最后一句、当前句功能、推进尺度、建议手感和关键事实；不要主动加入“废物测试/强框架/反击”等词，除非软锚点判断为明确测试或证据很强。当前截图事实优先于召回片段；召回片段只学习动作和节奏，不继承其强度、称呼或原句。",
                 "相似结构化案例片段：",
@@ -485,6 +619,12 @@ def build_bailian_rag_prompt(
                 json.dumps(strategy_guidance, ensure_ascii=False, indent=2),
                 "策略门工作方式：",
                 "上面的 strategy 是唯一决策点。你必须按该策略生成回复；百炼 file_search 只用于找表达参考、说法节奏和人味，不得反向改变策略、不继承案例强度、不照搬称呼或原句。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                FRAME_ACTION_RULE,
+                FRAME_ACTION_DETAIL_RULE,
+                action_guard,
+                RELATIONSHIP_PACE_RULE,
+                RELATIONSHIP_PACE_MODE_HINTS["strategy_quality"],
                 "知识库检索要求：",
                 "检索词优先围绕女生/对方最后一句、策略、style_hint、forbid 和关键事实。当前截图事实和策略门决策优先于召回片段；没有命中也要按策略生成一句自然可发的回复。",
                 "输出要求：",
@@ -502,6 +642,12 @@ def build_bailian_rag_prompt(
                 "先在内部完成状态压缩和策略选择，再使用百炼 file_search 从 baiou 片段知识库中检索表达参考。策略是唯一决策点，召回片段只学习说法、节奏和人味，不决定局势、不继承强度、不照搬称呼或原句。",
                 "策略选择边界：",
                 "低信息、冷淡、防御、拒绝时优先轻承接、轻撤退、转移话题或风险提醒；女生正常/热情且有承接时可以轻推进、轻微调侃或暧昧试探；只有上下文已有玩笑空间、暧昧承接或高投入时，才允许高张力推进。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                FRAME_ACTION_RULE,
+                FRAME_ACTION_DETAIL_RULE,
+                action_guard,
+                RELATIONSHIP_PACE_RULE,
+                RELATIONSHIP_PACE_MODE_HINTS["strategy_fast"],
                 "知识库检索要求：",
                 "检索词优先围绕女生/对方最后一句、当前句功能、内部选择的策略、建议手感和关键事实；不要让召回片段反向改变策略。当前截图事实优先于召回片段；没有命中也要按策略生成一句自然可发的回复。",
                 "当前基础标签：",
@@ -517,6 +663,12 @@ def build_bailian_rag_prompt(
             [
                 "知识库检索要求：",
                 "使用百炼 file_search 从 baiou 片段知识库中检索相似案例。当前截图事实优先于召回片段；召回片段只学习迁移动作、节奏和风险提醒，不继承其强度、称呼或原句。普通撒娇、接话、解释或收尾，不要仅凭单句就主动检索为废物测试或强框架对抗。",
+                TEXT_STRUCTURED_INPUT_RULE,
+                FRAME_ACTION_RULE,
+                FRAME_ACTION_DETAIL_RULE,
+                action_guard,
+                RELATIONSHIP_PACE_RULE,
+                RELATIONSHIP_PACE_MODE_HINTS["fast"],
                 "当前基础标签：",
                 "本模式不预先调用标签模型，请你根据当前输入自行判断并在输出 JSON 的 labels 字段中填写。",
                 "相似结构化案例片段：",
@@ -531,6 +683,7 @@ def strategy_fast_guidance() -> dict[str, Any]:
         "mode": MODE_BAILIAN_RAG_STRATEGY_FAST,
         "decision_rule": "策略优先；RAG 只做表达参考。",
         "strategies": ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
+        "relationship_pace_rule": RELATIONSHIP_PACE_RULE,
         "aggressive_strategy": {
             "name": "高张力推进",
             "boundary": "只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
@@ -567,7 +720,9 @@ def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") ->
 
 def heuristic_strategy_guidance(text: str, labels: dict[str, Any]) -> dict[str, Any]:
     female_state = labels.get("女生状态", "")
-    if female_state in {"冷淡", "防御", "拒绝"}:
+    if is_relationship_pace_test(text):
+        strategy, pressure, style, forbid = "轻推进", "中", "有边界地推进", ["顺从式退让", "道歉自证", "长篇解释"]
+    elif female_state in {"冷淡", "防御", "拒绝"}:
         strategy, pressure, style, forbid = "轻撤退", "高", "降压", ["强撩", "连续追问", "强邀约"]
     elif any(word in text for word in ["想你", "想和你聊", "喜欢", "宝宝", "礼物"]):
         strategy, pressure, style, forbid = "暧昧试探", "低", "暧昧但不油", ["长篇解释", "过度讨好"]
@@ -578,7 +733,7 @@ def heuristic_strategy_guidance(text: str, labels: dict[str, Any]) -> dict[str, 
     return {
         "state": {
             "关系阶段": labels.get("聊天阶段", "熟悉期"),
-            "对方投入度": "低" if female_state in {"冷淡", "低投入", "拒绝"} else "中",
+            "对方投入度": "中" if is_relationship_pace_test(text) else "低" if female_state in {"冷淡", "低投入", "拒绝"} else "中",
             "当前压力": pressure,
             "互动活跃度": "中",
         },
@@ -726,7 +881,7 @@ def normalize_quality_guidance(parsed: dict[str, Any]) -> dict[str, Any]:
         return {}
     output = {
         "labels": extract_labels(parsed),
-        "当前句功能": normalize_choice(parsed.get("当前句功能"), ["普通接话", "撒娇", "轻微试探", "明确测试", "收尾", "降压"]),
+        "当前句功能": normalize_choice(parsed.get("当前句功能"), ["普通接话", "撒娇", "轻微试探", "关系节奏测试", "明确测试", "收尾", "降压"]),
         "推进空间": normalize_choice(parsed.get("推进空间"), ["低", "中", "高"]),
         "推进尺度": normalize_choice(
             parsed.get("推进尺度"),
@@ -752,7 +907,9 @@ def normalize_choice(value: Any, allowed: list[str]) -> str:
 
 def heuristic_quality_guidance(text: str, labels: dict[str, Any]) -> dict[str, Any]:
     female_state = labels.get("女生状态", "")
-    if female_state in {"冷淡", "防御", "拒绝"}:
+    if is_relationship_pace_test(text):
+        function, space, scale, feel = "关系节奏测试", "中", "轻微调侃", "有边界地推进"
+    elif female_state in {"冷淡", "防御", "拒绝"}:
         function, space, scale, feel = "降压", "低", "降压收住", "降压"
     elif any(word in text for word in ["嗯嗯", "好的", "先这样", "下次"]):
         function, space, scale, feel = "收尾", "低", "低压力承接", "自然"
@@ -766,7 +923,7 @@ def heuristic_quality_guidance(text: str, labels: dict[str, Any]) -> dict[str, A
         "推进空间": space,
         "推进尺度": scale,
         "建议手感": feel,
-        "判断依据": "dry-run 启发式软锚点。",
+        "判断依据": "关系节奏质疑不默认进入顺从模式。" if is_relationship_pace_test(text) else "dry-run 启发式软锚点。",
     }
 
 
@@ -827,6 +984,14 @@ def normalize_label_value(field: str, value: Any, allowed: list[str], aliases: d
     return ""
 
 
+def has_clear_boundary(text: str) -> bool:
+    return any(cue in text for cue in CLEAR_BOUNDARY_CUES)
+
+
+def is_relationship_pace_test(text: str) -> bool:
+    return any(cue in text for cue in RELATIONSHIP_PACE_CUES) and not has_clear_boundary(text)
+
+
 def heuristic_labels(text: str) -> dict[str, Any]:
     stage = "熟悉期"
     contact_status = "未知"
@@ -844,9 +1009,12 @@ def heuristic_labels(text: str) -> dict[str, Any]:
         relationship_goal = "暧昧升温"
         if "宝宝" in text:
             heat_signal = "亲密称呼"
+    if is_relationship_pace_test(text):
+        relationship_goal = "暧昧升温"
+        heat_signal = "关系想象"
 
     female_state = "正常"
-    if any(word in text for word in ["拒绝", "不想", "算了", "别", "不要"]):
+    if has_clear_boundary(text) or any(word in text for word in ["拒绝", "不想", "算了", "别", "不要"]):
         female_state = "拒绝"
     elif any(word in text for word in ["哈哈", "嗯", "哦", "好吧"]):
         female_state = "低投入"
@@ -857,6 +1025,10 @@ def heuristic_labels(text: str) -> dict[str, Any]:
     strategy = "话题延展"
     risks: list[str] = []
     strength = "轻松"
+    if is_relationship_pace_test(text):
+        goal = "升温"
+        strategy = "轻微调侃"
+        strength = "调侃"
     if stage == "高意向推进期":
         goal = "邀约"
         strategy = "模糊邀约"
@@ -913,12 +1085,28 @@ def compact_reference(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_reply_result(parsed: dict[str, Any], labels: dict[str, Any], references: list[dict[str, Any]]) -> dict[str, Any]:
+def apply_relationship_pace_label_guard(labels: dict[str, Any], input_text: str = "") -> dict[str, Any]:
+    if not labels or not is_relationship_pace_test(input_text):
+        return labels
+    output = dict(labels)
+    output["关系推进目标"] = "暧昧升温"
+    output["女生状态"] = "正常"
+    output["男生目标"] = "升温"
+    if output.get("推荐策略") in {"主动降压", "轻松开场", "话题延展", "明确邀约"}:
+        output["推荐策略"] = "情绪升温"
+    if output.get("回复强度") == "安全":
+        output["回复强度"] = "调侃"
+    output["高热度信号"] = output.get("高热度信号") or "无"
+    return output
+
+
+def normalize_reply_result(parsed: dict[str, Any], labels: dict[str, Any], references: list[dict[str, Any]], input_text: str = "") -> dict[str, Any]:
     raw_labels = parsed.get("labels", labels) if isinstance(parsed.get("labels", labels), dict) else labels
+    normalized_labels = normalize_labels(raw_labels) if raw_labels else {}
     return {
         "reply": str(parsed.get("reply", "")),
         "coach_analysis": str(parsed.get("coach_analysis", "")),
-        "labels": normalize_labels(raw_labels) if raw_labels else {},
+        "labels": apply_relationship_pace_label_guard(normalized_labels, input_text),
         "risk_warning": str(parsed.get("risk_warning", "")),
         "next_step": str(parsed.get("next_step", "")),
         "reference_segments": parsed.get("reference_segments") if isinstance(parsed.get("reference_segments"), list) else [item.get("segment_id", "") for item in references],

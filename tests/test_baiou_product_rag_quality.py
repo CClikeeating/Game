@@ -9,8 +9,12 @@ from baiou.product.runtime.reply_engine import (
     build_bailian_rag_prompt,
     build_strategy_label_prompt,
     build_quality_label_prompt,
+    heuristic_labels,
+    heuristic_quality_guidance,
+    heuristic_strategy_guidance,
     normalize_mode,
     normalize_quality_guidance,
+    normalize_reply_result,
     resolve_user_id,
     vision_style_for_mode,
 )
@@ -188,6 +192,115 @@ def test_quality_label_prompt_does_not_overread_low_information_acknowledgement(
     assert "不要强行解读为暧昧、口是心非、怕你担心" in prompt
     assert "推进空间优先为低" in prompt
     assert "推进尺度优先为低压力承接或降压收住" in prompt
+
+
+def test_relationship_pace_prompt_blocks_compliance_mode() -> None:
+    quality_prompt = build_quality_label_prompt("女生/对方最后一句：我觉得我们是不是太快了")
+    strategy_prompt = build_strategy_label_prompt("女生/对方最后一句：我们才认识几天就在一起了")
+    fast_prompt = build_bailian_rag_prompt("女生/对方最后一句：我觉得我们发展太快了", strategy_mode=True)
+
+    for prompt in [quality_prompt, strategy_prompt, fast_prompt]:
+        assert "关系节奏" in prompt
+        assert "不能进入顺从模式" in prompt
+        assert "好，听你的" in prompt
+        assert "按你的节奏来" in prompt
+        assert "快慢不重要" in prompt
+        assert "表面维度" in prompt
+        assert "背后担忧" in prompt
+        assert "更高层标准" in prompt
+        assert "不要固定输出同一句" in prompt
+        assert "男生目标=降压" in prompt
+
+
+def test_text_structured_input_and_speech_act_rules_are_shared() -> None:
+    fast_prompt = build_bailian_rag_prompt("文本评测入口：\nturn_0001 女生: 和谁", strategy_mode=True)
+    quality_prompt = build_bailian_rag_prompt(
+        "文本评测入口：\nturn_0001 女生: 和谁",
+        {
+            "labels": {"聊天阶段": "熟悉期"},
+            "当前句功能": "轻微试探",
+            "推进空间": "中",
+            "推进尺度": "轻微调侃",
+            "建议手感": "松弛",
+        },
+    )
+
+    for prompt in [fast_prompt, quality_prompt]:
+        assert "文本结构输入规则" in prompt
+        assert "禁止要求用户再上传截图" in prompt
+        assert "话语动作优先于字面接话" in prompt
+        assert "极短追问优先极短直给" in prompt
+        assert "主动邀约或命令不必总是立即接受" in prompt
+        assert "动作子规则要可迁移" in prompt
+        assert "先直给核心信息" in prompt
+        assert "不要凭空引入第三方" in prompt
+        assert "反客为主" in prompt
+        assert "误读你评价的对象" in prompt
+        assert "选择感、感觉、投入一致性和自有边界" in prompt
+        assert "否定她的预设" in prompt
+        assert "事实纠偏优先级高于夸奖和哄" in prompt
+        assert "当前动作强提醒" in prompt
+        assert "短人称追问强提醒" in prompt
+
+
+def test_dynamic_action_guard_is_added_to_quality_and_strategy_prompts() -> None:
+    quality_prompt = build_quality_label_prompt("女生/对方最后一句：我就发了个表情包 就傻了？哪里傻")
+    strategy_prompt = build_strategy_label_prompt("女生/对方最后一句：走 帅哥 出来吃饭")
+
+    assert "事实纠偏强提醒" in quality_prompt
+    assert "事实纠偏优先于夸可爱" in quality_prompt
+    assert "主动邀约强提醒" in strategy_prompt
+    assert "不能只说行、走、可以、这顿谁请" in strategy_prompt
+
+
+def test_relationship_pace_heuristics_keep_frame_without_overriding_boundary() -> None:
+    text = "女生/对方最后一句：我觉得我们是不是太快了，我们才认识几天就在一起了"
+    labels = heuristic_labels(text)
+    quality = heuristic_quality_guidance(text, labels)
+    strategy = heuristic_strategy_guidance(text, labels)
+
+    assert labels["女生状态"] == "正常"
+    assert labels["男生目标"] == "升温"
+    assert labels["推荐策略"] == "轻微调侃"
+    assert quality["当前句功能"] == "关系节奏测试"
+    assert quality["推进空间"] == "中"
+    assert quality["推进尺度"] == "轻微调侃"
+    assert strategy["strategy"] == "轻推进"
+    assert "顺从式退让" in strategy["forbid"]
+
+    boundary_labels = heuristic_labels("女生/对方最后一句：我不舒服，先别推进了")
+    boundary_quality = heuristic_quality_guidance("女生/对方最后一句：我不舒服，先别推进了", boundary_labels)
+
+    assert boundary_labels["女生状态"] == "拒绝"
+    assert boundary_labels["男生目标"] == "降压"
+    assert boundary_labels["推荐策略"] == "主动降压"
+    assert boundary_quality["当前句功能"] == "降压"
+
+
+def test_relationship_pace_final_labels_are_guarded_from_compliance_mode() -> None:
+    answer = normalize_reply_result(
+        {
+            "reply": "你担心的是节奏，还是节奏背后的确定感？",
+            "labels": {
+                "聊天阶段": "暧昧升温期",
+                "关系推进目标": "降压修复",
+                "女生状态": "防御",
+                "男生目标": "降压",
+                "推荐策略": "主动降压",
+                "风险类型": [],
+                "回复强度": "安全",
+            },
+        },
+        {},
+        [],
+        "女生/对方最后一句：我觉得我们是不是太快了",
+    )
+
+    assert answer["labels"]["关系推进目标"] == "暧昧升温"
+    assert answer["labels"]["女生状态"] == "正常"
+    assert answer["labels"]["男生目标"] == "升温"
+    assert answer["labels"]["推荐策略"] == "情绪升温"
+    assert answer["labels"]["回复强度"] == "调侃"
 
 
 def test_quality_guidance_accepts_chat_level_sexual_tension_scale() -> None:
