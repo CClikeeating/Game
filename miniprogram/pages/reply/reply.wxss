@@ -100,6 +100,10 @@
   border-radius: 12rpx;
 }
 
+.mode-strip.one {
+  grid-template-columns: 1fr;
+}
+
 .mode-pill {
   height: 44rpx;
   border-radius: 9rpx;
@@ -115,6 +119,43 @@
   background: #ffffff;
   color: #171c22;
   box-shadow: 0 6rpx 18rpx rgba(38, 52, 72, 0.08);
+}
+
+.entry-strip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8rpx;
+  margin-bottom: 12rpx;
+  padding: 8rpx;
+  border-radius: 18rpx;
+}
+
+.entry-pill {
+  min-height: 76rpx;
+  box-sizing: border-box;
+  padding: 12rpx;
+  border-radius: 12rpx;
+  color: #536173;
+  font-size: 25rpx;
+  font-weight: 850;
+  text-align: center;
+}
+
+.entry-pill text {
+  display: block;
+  margin-top: 4rpx;
+  color: #7b8494;
+  font-size: 20rpx;
+  font-weight: 600;
+}
+
+.entry-pill.active {
+  background: #176b5d;
+  color: #ffffff;
+}
+
+.entry-pill.active text {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .mode-block {

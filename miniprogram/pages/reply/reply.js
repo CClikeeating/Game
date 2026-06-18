@@ -2,11 +2,30 @@ const api = require("../../utils/api")
 const tabbar = require("../../utils/tabbar")
 const app = getApp()
 
+const MODE_FAST = "bailian_rag_fast"
+const MODE_STRATEGY_QUALITY = "bailian_rag_strategy_quality"
+const ALLOWED_MODES = [MODE_FAST, MODE_STRATEGY_QUALITY]
+
+function normalizeMode(mode) {
+  return ALLOWED_MODES.includes(mode) ? mode : MODE_FAST
+}
+
+function modeCosts(limits = {}) {
+  const costs = limits.mode_unit_costs || {}
+  return {
+    fastCost: costs[MODE_FAST] || 1,
+    strategyCost: costs[MODE_STRATEGY_QUALITY] || 2
+  }
+}
+
 Page({
   data: {
     question: "我该怎么回",
     context: "",
-    mode: "bailian_rag_fast",
+    entryType: "text_only",
+    mode: MODE_FAST,
+    fastCost: 1,
+    strategyCost: 2,
     images: [],
     conversations: [],
     currentConversation: {},
@@ -19,8 +38,7 @@ Page({
     draftTitle: "",
     draftBackground: "",
     editingId: "",
-    analysisOpen: false,
-    debugOpen: false
+    analysisOpen: false
   },
 
   onShow() {
@@ -39,7 +57,8 @@ Page({
       }
       const me = await api.request("/api/v1/me")
       await this.loadConversations()
-      this.setData({ limits: me.limits || app.globalData.limits || {}, serviceReady: true })
+      const limits = me.limits || app.globalData.limits || {}
+      this.setData({ limits, ...modeCosts(limits), serviceReady: true })
     } catch (err) {
       this.setData({ limits: app.globalData.limits || this.data.limits, serviceReady: false })
       this.toast(err.message || "初始化失败")
@@ -54,21 +73,11 @@ Page({
             const login = await api.request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
             resolve(login)
           } catch (err) {
-            try {
-              const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
-              resolve(fallback)
-            } catch (fallbackErr) {
-              reject(fallbackErr)
-            }
+            reject(err)
           }
         },
-        fail: async () => {
-          try {
-            const fallback = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
-            resolve(fallback)
-          } catch (fallbackErr) {
-            reject(fallbackErr)
-          }
+        fail: () => {
+          reject({ message: "微信登录失败，请稍后重试" })
         }
       })
     })
@@ -127,7 +136,8 @@ Page({
       this.setData({ draftTitle: "", draftBackground: "", editingId: "" })
       await this.loadConversations()
       const me = await api.request("/api/v1/me")
-      this.setData({ limits: me.limits || this.data.limits, serviceReady: true })
+      const limits = me.limits || this.data.limits
+      this.setData({ limits, ...modeCosts(limits), serviceReady: true })
     } catch (err) {
       this.toast(err.message || "保存失败")
     }
@@ -171,8 +181,19 @@ Page({
     this.setData({ feedbackNotes: e.detail.value })
   },
 
+  selectEntry(e) {
+    const entryType = e.currentTarget.dataset.entry || "text_only"
+    const update = { entryType }
+    if (entryType === "text_only") {
+      update.mode = MODE_FAST
+      update.images = []
+    }
+    this.setData(update)
+  },
+
   selectMode(e) {
-    this.setData({ mode: e.currentTarget.dataset.mode })
+    if (this.data.entryType === "text_only") return
+    this.setData({ mode: normalizeMode(e.currentTarget.dataset.mode) })
   },
 
   chooseImages() {
@@ -216,34 +237,40 @@ Page({
       this.toast("请输入用户问题")
       return
     }
-    if (!this.data.images.length) {
+    const textOnly = this.data.entryType === "text_only"
+    if (!textOnly && !this.data.images.length) {
       this.toast("请上传聊天截图")
       return
     }
     this.setData({ loading: true })
     try {
       const uploads = []
-      for (const image of this.data.images) {
-        const uploaded = await api.uploadImage(image.tempFilePath)
-        uploads.push(uploaded.upload_id)
+      if (!textOnly) {
+        for (const image of this.data.images) {
+          const uploaded = await api.uploadImage(image.tempFilePath)
+          uploads.push(uploaded.upload_id)
+        }
       }
+      const mode = textOnly ? MODE_FAST : normalizeMode(this.data.mode)
       const data = await api.request("/api/v1/replies", {
         method: "POST",
         data: {
           conversation_id: this.data.currentConversation.conversation_id,
           question: this.data.question,
           context: this.data.context,
-          mode: this.data.mode,
+          mode,
+          input_type: textOnly ? "text_only" : "screenshot",
           upload_ids: uploads
         }
       })
+      const limits = data.limits || this.data.limits
       this.setData({
         result: data.reply_run,
-        limits: data.limits || this.data.limits,
+        limits,
+        ...modeCosts(limits),
         images: [],
         feedbackNotes: "",
-        analysisOpen: false,
-        debugOpen: false
+        analysisOpen: false
       })
     } catch (err) {
       this.toast(err.message || "生成失败")

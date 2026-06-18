@@ -87,7 +87,7 @@ imports/{batch_id}/skipped_segments.jsonl
 
 ## 4. 产品层
 
-负责文本/截图输入、标签判断、本地案例片段检索、百炼 RAG 快速模式、回复生成和网页测试台。
+负责文本/截图输入、标签判断、本地案例片段检索、日常接话/暧昧推荐、回复生成和网页测试台。
 
 主要产物：
 
@@ -158,43 +158,43 @@ It records the current integration branch, parallel product/case branches, clean
 baiou/product/DEPLOY_PM_REPORT.md
 ```
 
-当前服务器内测后端已经部署到：
+当前线上后端已经部署到：
 
 ```text
-http://101.133.161.248
+https://baioulove.xyz
+https://baioulove.xyz/app
+https://baioulove.xyz/api/v1/health
 ```
 
 当前已完成：
 
 - 小程序 API 后端部署，服务名 `baiou`，Nginx 反代到本机 `127.0.0.1:7871`。
-- 百炼 RAG 快速模式和质量模式可用，服务器只保留百炼知识库 ID，不再保存本地 455 条知识库正文。
-- 反馈写入、后台统计、反馈 CSV 导出已接入。
+- 用户端只暴露日常接话和暧昧推荐：`bailian_rag_fast` 扣 1，`bailian_rag_strategy_quality` 扣 2。
+- 反馈写入、后台统计、反馈 CSV 与截图审核 ZIP 导出已接入。
 - 截图和模型运行明细保留周期默认 30 天，服务器每天凌晨自动清理。
-- 后端已支持微信 `wx.login` 登录链路，但服务器还没有配置小程序 `AppSecret`，当前仍保留内测登录回退。
+- 后端已支持微信 `wx.login` 登录链路；小程序正式版必须配置 AppSecret 并关闭内测登录回退。
 
-备案通过前暂不做或不能正式启用：
+小程序正式发布前仍需完成：
 
-- 域名解析到服务器公网 IP。
-- HTTPS 证书配置。
-- 微信小程序后台 request/uploadFile 合法域名配置。
-- 小程序正式版 `apiBaseUrl` 切换到 `https://正式域名`。
+- 微信小程序后台 request/uploadFile 合法域名配置为 `https://baioulove.xyz`。
+- 服务器配置 `BAIOU_WECHAT_APPID` / `BAIOU_WECHAT_SECRET`。
+- 服务器配置 `BAIOU_MINIPROGRAM_DEV_LOGIN=false`。
 - 小程序提交审核和公众开放。
 
 备案通过后的接入顺序：
 
 ```text
-1. 域名解析到 101.133.161.248
-2. 配置 HTTPS 证书
-3. Nginx 增加正式 server_name
-4. 小程序 apiBaseUrl 改为 https://正式域名
-5. 微信后台配置合法域名
-6. 真机测试上传、回复、反馈、后台统计
-7. 提交小程序审核
+1. 微信公众平台配置 request/uploadFile 合法域名：`https://baioulove.xyz`
+2. 服务器配置 `BAIOU_WECHAT_APPID`、`BAIOU_WECHAT_SECRET`
+3. 服务器关闭 `BAIOU_MINIPROGRAM_DEV_LOGIN`
+4. 小程序开发者工具打开 URL 校验，确认正式版 `apiBaseUrl` 指向 `https://baioulove.xyz`
+5. 真机测试文字输入、上传截图、生成回复、反馈、后台统计、审核 ZIP 导出
+6. 提交小程序审核
 ```
 
 正式开放前建议补齐：
 
-- 在微信公众平台获取小程序 `AppSecret`，服务器配置 `BAIOU_WECHAT_SECRET`。
+- 在微信公众平台获取小程序 `AppID` 和 `AppSecret`，服务器配置 `BAIOU_WECHAT_APPID` / `BAIOU_WECHAT_SECRET`。
 - 关闭内测登录：`BAIOU_MINIPROGRAM_DEV_LOGIN=false`。
 - 改掉已经在对话中出现过的服务器 root 密码，改用 SSH key 登录。
 - 管理后台 token 仅在服务器环境变量中保存，不写入前端或公开文档。
@@ -234,12 +234,13 @@ python -m pytest -q
 - `/app` 用户网页 alpha：
   - 内测访问码登录。
   - 手机端优先，同时适配桌面端。
-  - 上传聊天截图、输入问题、补充背景、选择快速/质量模式、生成推荐回复。
+  - 支持文字输入和截图回复；文字输入强制日常接话，截图回复可选日常接话/暧昧推荐。
   - 普通用户页面不展示“截图理解”和“参考片段”；这些只保留在后端/admin 调试数据里。
   - 上传区显示已选择图片数量、文件名、大小，并做格式/大小/数量校验。
   - 生成时显示等待阶段和等待秒数。
-  - 快速模式扣 1 次额度，质量模式扣 2 次额度。
-  - dry-run 不扣真实额度。
+  - 每人每日免费额度默认 10；日常接话扣 1，暧昧推荐扣 2。
+  - 第一版不展示 dry-run 选项。
+  - 更多额度暂不接支付，用户通过 QQ `1179123330` 联系作者或使用兑换码。
 
 - `/admin` 管理后台：
   - 使用 `Authorization: Bearer <BAIOU_ADMIN_TOKEN>`，token 不放 URL。
@@ -249,7 +250,7 @@ python -m pytest -q
   - 支持单用户每日额度覆盖。
   - 支持单用户禁用（额度 0）和清空覆盖额度。
   - 支持动态配置全局每日额度、IP 每日额度、全站每日额度、模式扣费、RAG 知识库 ID 和召回数量。
-  - 支持反馈查看和 CSV 导出。
+  - 支持反馈查看、CSV 导出和包含截图的审核 ZIP 导出。
 
 - 服务端安全和成本控制：
   - Gunicorn 绑定 `127.0.0.1:7871`，公网只通过 Nginx 80 端口访问。
@@ -287,9 +288,11 @@ BAIOU_VECTOR_STORE_IDS=n7s0ou2dpt
 BAIOU_RAG_MAX_NUM_RESULTS=3
 BAIOU_UPLOAD_RETENTION_DAYS=30
 BAIOU_RUN_RETENTION_DAYS=30
-BAIOU_WEB_IP_DAILY_QUOTA=20
-BAIOU_WEB_SITE_DAILY_QUOTA=500
-BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_quality=2
+BAIOU_DAILY_REPLY_QUOTA=10
+BAIOU_WEB_IP_DAILY_QUOTA=0
+BAIOU_WEB_SITE_DAILY_QUOTA=1000
+BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_strategy_quality=2
+BAIOU_CONTACT_QQ=1179123330
 BAIOU_TRUSTED_PROXY_IPS=127.0.0.1,::1
 ```
 
@@ -344,19 +347,22 @@ curl -fsS http://127.0.0.1:7871/api/v1/health
 打开 /app，确认能看到访问码页。
 输入内测码，确认能进入用户页。
 上传 1 张图，确认页面显示“已选择 1 张”。
-快速模式跑一次，确认返回 model_success。
-质量模式跑一次，确认等待状态可见，且额度扣 2。
+文字输入跑一次，确认不展示上传框且返回 model_success。
+截图回复选择日常接话跑一次，确认额度扣 1。
+截图回复选择暧昧推荐跑一次，确认等待状态可见且额度扣 2。
+在“我的”页输入兑换码，确认额度刷新。
 打开 /admin，输入 admin token。
 确认 stats、users、ip-usage、feedback 都能加载。
-确认全站每日额度为 500。
+确认导出的审核 ZIP 包含 feedback.csv 和截图。
+确认全站每日额度为 1000。
 ```
 
 ### 当前已知注意事项
 
-- 当前内测仍是 HTTP，不适合长期公开传播真实用户截图；正式开放前建议配置域名和 HTTPS。
+- 正式小程序必须走 HTTPS 合法域名，微信后台 request/uploadFile 都要配置 `https://baioulove.xyz`。
 - 用户截图属于隐私数据，必须保留清理任务。当前代码提供 `baiou.product.api.cleanup`，服务器应定时执行。
 - 当前网页 alpha 已经可用，但还不是完整商业化产品：没有支付、没有正式账号系统、没有微信小程序正式发布链路。
-- 质量模式会比快速模式慢，前端已有等待提示和 90 秒超时；如果后续模型调用经常超过 90 秒，需要调大前端超时时间或改成异步任务轮询。
+- 暧昧推荐会比日常接话慢，前端已有等待提示和 90 秒超时；如果后续模型调用经常超过 90 秒，需要调大前端超时时间或改成异步任务轮询。
 - 管理后台可以动态调额度，但环境变量仍会在服务重启后作为基础配置载入；需要区分“服务器 env 默认值”和“admin_config 动态覆盖值”。
 - 不要把 `tt/` 里的真实测试素材上传到外部云平台样例仓库，也不要打包进部署镜像。
 - 不要把 `outputs/baiou/cases/knowledge/eval_sets/` 里的 holdout 测评集上传到 RAG 知识库，避免评测泄漏。

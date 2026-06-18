@@ -75,6 +75,18 @@ class ProductStore:
                     FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS reply_run_images (
+                    image_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    original_name TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES reply_runs(run_id),
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS feedback (
                     feedback_id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -152,6 +164,29 @@ class ProductStore:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS redeem_codes (
+                    code TEXT PRIMARY KEY,
+                    daily_reply_quota INTEGER NOT NULL DEFAULT 0,
+                    max_uses INTEGER NOT NULL DEFAULT 1,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    expires_at TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS redeem_redemptions (
+                    redemption_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    daily_reply_quota INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, code),
+                    FOREIGN KEY(user_id) REFERENCES users(user_id),
+                    FOREIGN KEY(code) REFERENCES redeem_codes(code)
                 );
                 """
             )
@@ -357,6 +392,33 @@ class ProductStore:
                 ),
             )
         return self.get_reply_run(user_id, run_id)
+
+    def add_reply_run_images(self, user_id: str, run_id: str, images: list[dict[str, Any]]) -> None:
+        if not images:
+            return
+        stamp = now_iso()
+        rows = []
+        for item in images:
+            path = str(item.get("path", "")).strip()
+            if not path:
+                continue
+            size = item.get("size_bytes")
+            if size is None:
+                try:
+                    size = Path(path).stat().st_size
+                except OSError:
+                    size = 0
+            rows.append((new_id("img"), run_id, user_id, str(item.get("original_name", "")), path, int(size), stamp))
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO reply_run_images(image_id, run_id, user_id, original_name, path, size_bytes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
 
     def fail_reply_run(self, user_id: str, run_id: str, error: str) -> dict[str, Any] | None:
         return self.update_reply_run(
@@ -643,6 +705,112 @@ class ProductStore:
     def feedback_export_rows(self, limit: int = 1000) -> list[dict[str, Any]]:
         return self.list_feedback_detail(limit)
 
+    def feedback_export_images(self, run_ids: list[str]) -> list[dict[str, Any]]:
+        ids = [item for item in run_ids if item]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT image_id, run_id, user_id, original_name, path, size_bytes, created_at
+                FROM reply_run_images
+                WHERE run_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                ids,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_redeem_code(
+        self,
+        code: str,
+        daily_reply_quota: int,
+        max_uses: int = 1,
+        expires_at: str = "",
+        status: str = "active",
+        note: str = "",
+    ) -> dict[str, Any]:
+        clean_code = normalize_code(code)
+        if not clean_code:
+            return {}
+        stamp = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO redeem_codes(code, daily_reply_quota, max_uses, status, expires_at, note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    daily_reply_quota = excluded.daily_reply_quota,
+                    max_uses = excluded.max_uses,
+                    status = excluded.status,
+                    expires_at = excluded.expires_at,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (clean_code, max(0, int(daily_reply_quota)), max(0, int(max_uses)), status, expires_at, note, stamp, stamp),
+            )
+            row = conn.execute("SELECT * FROM redeem_codes WHERE code = ?", (clean_code,)).fetchone()
+        return dict(row) if row else {}
+
+    def redeem_code(self, user_id: str, code: str, default_daily_quota: int) -> tuple[dict[str, Any] | None, str]:
+        clean_code = normalize_code(code)
+        if not clean_code:
+            return None, "redeem_code_required"
+        self.ensure_user(user_id)
+        stamp = now_iso()
+        with self.connect() as conn:
+            code_row = conn.execute("SELECT * FROM redeem_codes WHERE code = ?", (clean_code,)).fetchone()
+            if not code_row:
+                return None, "redeem_code_invalid"
+            item = dict(code_row)
+            if item.get("status") != "active":
+                return None, "redeem_code_inactive"
+            if item.get("expires_at") and str(item["expires_at"]) < stamp:
+                return None, "redeem_code_expired"
+            existing = conn.execute(
+                "SELECT * FROM redeem_redemptions WHERE user_id = ? AND code = ?",
+                (user_id, clean_code),
+            ).fetchone()
+            if existing:
+                return dict(existing), "redeem_code_already_used"
+            if int(item.get("max_uses", 0) or 0) > 0 and int(item.get("used_count", 0) or 0) >= int(item.get("max_uses", 0) or 0):
+                return None, "redeem_code_exhausted"
+
+            quota = max(0, int(item.get("daily_reply_quota", 0) or 0))
+            override = conn.execute("SELECT * FROM user_quota_overrides WHERE user_id = ?", (user_id,)).fetchone()
+            current_quota = int(default_daily_quota)
+            disabled = 0
+            if override:
+                disabled = int(override["disabled"] or 0)
+                if override["daily_reply_quota"] is not None:
+                    current_quota = int(override["daily_reply_quota"])
+            next_quota = max(current_quota, quota)
+            redemption_id = new_id("redeem")
+            conn.execute(
+                """
+                INSERT INTO redeem_redemptions(redemption_id, user_id, code, daily_reply_quota, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (redemption_id, user_id, clean_code, quota, stamp),
+            )
+            conn.execute(
+                "UPDATE redeem_codes SET used_count = used_count + 1, updated_at = ? WHERE code = ?",
+                (stamp, clean_code),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_quota_overrides(user_id, daily_reply_quota, disabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    daily_reply_quota = excluded.daily_reply_quota,
+                    disabled = excluded.disabled,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, next_quota, disabled, stamp, stamp),
+            )
+        return {"code": clean_code, "daily_reply_quota": quota, "effective_daily_reply_quota": next_quota}, ""
+
     def list_admin_reply_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -727,6 +895,10 @@ def decode_json(value: str, fallback: Any) -> Any:
         return json.loads(value or "")
     except json.JSONDecodeError:
         return fallback
+
+
+def normalize_code(code: str) -> str:
+    return "".join(str(code or "").strip().upper().split())
 
 
 def scalar(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -> int:

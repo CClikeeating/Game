@@ -6,10 +6,11 @@ import json
 import os
 import uuid
 from csv import DictWriter
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from urllib import parse, request as urlrequest
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from flask import Flask, Response, jsonify, request
 from werkzeug.datastructures import FileStorage
@@ -43,11 +44,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "limits": {
         "max_conversations_per_user": 5,
         "history_turns_for_reply": 6,
-        "daily_reply_quota": 20,
+        "daily_reply_quota": 10,
         "max_images_per_reply": 3,
         "min_images_per_reply": 1,
         "max_image_mb": 8,
-        "web_site_daily_quota": 500,
+        "web_ip_daily_quota": 0,
+        "web_site_daily_quota": 1000,
+        "mode_unit_costs": {
+            MODE_BAILIAN_RAG_FAST: 1,
+            MODE_BAILIAN_RAG_STRATEGY_QUALITY: 2,
+        },
     },
     "runtime": {
         "default_mode": MODE_BAILIAN_RAG_FAST,
@@ -60,6 +66,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "retention": {"upload_days": 30, "run_days": 30},
     "announcements": [],
     "billing": {"products": []},
+    "contact": {"qq": "1179123330"},
 }
 
 
@@ -217,7 +224,15 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         runtime_context = build_runtime_context(conversation, history, user_context)
         run_record = store.create_reply_run(user_id, conversation_id, mode, question, user_context, runtime_context, image_count)
         image_paths = [Path(item["path"]) for item in staged_uploads]
-        image_paths.extend(save_images(files, resolve_path(config["upload_root"]) / run_record["run_id"], config))
+        image_records = [
+            {"path": item.get("path", ""), "original_name": item.get("original_name", ""), "size_bytes": item.get("size_bytes", 0)}
+            for item in staged_uploads
+        ]
+        direct_files = [file for file in files if file and file.filename]
+        saved_paths = save_images(direct_files, resolve_path(config["upload_root"]) / run_record["run_id"], config)
+        image_paths.extend(saved_paths)
+        image_records.extend(reply_image_records(direct_files, saved_paths))
+        store.add_reply_run_images(user_id, run_record["run_id"], image_records)
         runtime_question = text_only_runtime_question(question) if input_type == "text_only" else question
         if input_type == "text_only":
             runtime_context = text_only_runtime_context(runtime_context)
@@ -303,7 +318,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         payload = request.get_json(silent=True) or {}
         disabled = parse_bool(payload.get("disabled"), False)
         quota_value = payload.get("daily_reply_quota")
-        quota = None if quota_value is None or str(quota_value).strip() == "" else bounded_int(quota_value, int(config.get("daily_reply_quota", 20)), 0, 100000)
+        quota = None if quota_value is None or str(quota_value).strip() == "" else bounded_int(quota_value, int(config.get("daily_reply_quota", 10)), 0, 100000)
         override = store.set_user_quota_override(user_id, quota, disabled)
         return ok({"quota": public_user_quota_override(override, config)})
 
@@ -313,7 +328,41 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if auth_error:
             return auth_error
         store.clear_user_quota_override(user_id)
-        return ok({"quota": {"user_id": user_id, "daily_reply_quota": None, "disabled": False, "effective_daily_reply_quota": int(config.get("daily_reply_quota", 20))}})
+        return ok({"quota": {"user_id": user_id, "daily_reply_quota": None, "disabled": False, "effective_daily_reply_quota": int(config.get("daily_reply_quota", 10))}})
+
+    @app.post("/api/v1/redeem-codes/redeem")
+    def redeem_code_apply():
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
+        payload = request.get_json(silent=True) or {}
+        redemption, error = store.redeem_code(user_id, str(payload.get("code", "")), int(config.get("daily_reply_quota", 10)))
+        if error:
+            status = {
+                "redeem_code_already_used": 409,
+                "redeem_code_expired": 410,
+                "redeem_code_exhausted": 429,
+            }.get(error, 400)
+            return fail(error, redeem_code_error_message(error), status)
+        return ok({"redemption": redemption or {}, "limits": usage_payload(store, config, user_id)})
+
+    @app.post("/api/v1/admin/redeem-codes")
+    def admin_redeem_code_save():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        item = store.upsert_redeem_code(
+            str(payload.get("code", "")),
+            bounded_int(payload.get("daily_reply_quota"), int(config.get("daily_reply_quota", 10)), 1, 100000),
+            bounded_int(payload.get("max_uses"), 1, 0, 1000000),
+            str(payload.get("expires_at", "")).strip(),
+            str(payload.get("status", "active") or "active").strip(),
+            str(payload.get("note", "")).strip(),
+        )
+        if not item:
+            return fail("redeem_code_required", "请输入兑换码。", 400)
+        return ok({"redeem_code": public_redeem_code(item)})
 
     @app.get("/api/v1/admin/ip-usage")
     def admin_ip_usage():
@@ -373,29 +422,37 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return auth_error
         limit = bounded_int(request.args.get("limit"), 1000, 1, 10000)
         rows = [feedback_export_row(item) for item in store.feedback_export_rows(limit)]
-        handle = StringIO()
-        fieldnames = [
-            "created_at",
-            "user_id",
-            "conversation_id",
-            "run_id",
-            "mode",
-            "status",
-            "rating",
-            "notes",
-            "question",
-            "reply",
-            "risk_warning",
-            "image_count",
-            "reference_count",
-        ]
-        writer = DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
         return Response(
-            "\ufeff" + handle.getvalue(),
+            "\ufeff" + csv_text(rows, feedback_export_fieldnames()),
             mimetype="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=baiou_feedback.csv"},
+        )
+
+    @app.get("/api/v1/admin/feedback/export.zip")
+    def admin_feedback_export_zip():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 1000, 1, 10000)
+        items = store.feedback_export_rows(limit)
+        images = store.feedback_export_images([str(item.get("run_id", "")) for item in items])
+        images_by_run = export_image_paths_by_run(images)
+        rows = []
+        for item in items:
+            row = feedback_export_row(item)
+            row["screenshots"] = ";".join(images_by_run.get(str(item.get("run_id", "")), []))
+            rows.append(row)
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr("feedback.csv", "\ufeff" + csv_text(rows, feedback_export_fieldnames(include_screenshots=True)))
+            for image in images:
+                source = Path(str(image.get("path", "")))
+                if source.is_file():
+                    archive.write(source, safe_zip_image_path(image))
+        return Response(
+            buffer.getvalue(),
+            mimetype="application/zip",
+            headers={"Content-Disposition": "attachment; filename=baiou_feedback_review.zip"},
         )
 
     @app.get("/api/v1/announcements")
@@ -406,7 +463,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
 
     @app.get("/api/v1/billing/products")
     def billing_products():
-        return ok({"products": config.get("billing_products", []), "payment_enabled": False})
+        return ok({"products": config.get("billing_products", []), "payment_enabled": False, "contact_qq": config.get("contact_qq", "1179123330")})
 
     @app.post("/api/v1/billing/orders")
     def billing_orders():
@@ -442,6 +499,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
     web_alpha = raw.get("web_alpha", {}) if isinstance(raw.get("web_alpha"), dict) else {}
     retention = raw.get("retention", {}) if isinstance(raw.get("retention"), dict) else {}
     rag = raw.get("rag", {}) if isinstance(raw.get("rag"), dict) else {}
+    contact = raw.get("contact", {}) if isinstance(raw.get("contact"), dict) else {}
     max_image_mb = int(os.environ.get("BAIOU_MINIPROGRAM_MAX_IMAGE_MB") or limits.get("max_image_mb") or upload.get("max_image_mb", 8))
     web_access_codes = configured_list(os.environ.get("BAIOU_WEB_ACCESS_CODES") or web_alpha.get("access_codes", []))
     web_access_code_hashes = configured_list(os.environ.get("BAIOU_WEB_ACCESS_CODE_HASHES") or web_alpha.get("access_code_hashes", []))
@@ -458,7 +516,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "allowed_image_extensions": {normalize_extension(item) for item in upload.get("allowed_image_extensions", [])},
         "max_conversations_per_user": int(limits.get("max_conversations_per_user", 5)),
         "history_turns_for_reply": int(limits.get("history_turns_for_reply", 6)),
-        "daily_reply_quota": int(limits.get("daily_reply_quota", 20)),
+        "daily_reply_quota": int(os.environ.get("BAIOU_DAILY_REPLY_QUOTA") or limits.get("daily_reply_quota", 10)),
         "max_images_per_reply": int(limits.get("max_images_per_reply", 3)),
         "min_images_per_reply": int(limits.get("min_images_per_reply", 1)),
         "max_image_mb": max_image_mb,
@@ -466,8 +524,8 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "web_access_required": web_access_required,
         "web_access_codes": web_access_codes,
         "web_access_code_hashes": web_access_code_hashes,
-        "web_ip_daily_quota": int(os.environ.get("BAIOU_WEB_IP_DAILY_QUOTA") or limits.get("web_ip_daily_quota", 20)),
-        "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 500)),
+        "web_ip_daily_quota": int(os.environ.get("BAIOU_WEB_IP_DAILY_QUOTA") or limits.get("web_ip_daily_quota", 0)),
+        "web_site_daily_quota": int(os.environ.get("BAIOU_WEB_SITE_DAILY_QUOTA") or limits.get("web_site_daily_quota", 1000)),
         "mode_unit_costs": configured_int_map(
             os.environ.get("BAIOU_MODE_UNIT_COSTS") or limits.get("mode_unit_costs"),
             {
@@ -491,6 +549,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "rag_max_num_results": bounded_int(rag.get("max_num_results") or os.environ.get("BAIOU_RAG_MAX_NUM_RESULTS"), 3, 1, 10),
         "announcements": raw.get("announcements", []),
         "billing_products": raw.get("billing", {}).get("products", []) if isinstance(raw.get("billing"), dict) else [],
+        "contact_qq": os.environ.get("BAIOU_CONTACT_QQ") or contact.get("qq", "1179123330"),
     }
 
 
@@ -646,9 +705,9 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
             "max_num_results": config.get("rag_max_num_results", 3),
         },
         "limits": {
-            "daily_reply_quota": config.get("daily_reply_quota", 20),
+            "daily_reply_quota": config.get("daily_reply_quota", 10),
             "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
-            "web_site_daily_quota": config.get("web_site_daily_quota", 500),
+            "web_site_daily_quota": config.get("web_site_daily_quota", 1000),
             "mode_unit_costs": config.get("mode_unit_costs", {}),
             "max_conversations_per_user": config.get("max_conversations_per_user", 5),
             "history_turns_for_reply": config.get("history_turns_for_reply", 6),
@@ -692,7 +751,7 @@ def site_quota_payload(store: ProductStore, config: dict[str, Any]) -> dict[str,
 
 
 def public_admin_user(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    quota = int(config.get("daily_reply_quota", 20))
+    quota = int(config.get("daily_reply_quota", 10))
     override = item.get("quota_override")
     disabled = bool(item.get("disabled"))
     effective_quota = 0 if disabled else int(override) if override is not None else quota
@@ -721,7 +780,7 @@ def public_admin_user(item: dict[str, Any], config: dict[str, Any]) -> dict[str,
 def public_user_quota_override(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     disabled = bool(item.get("disabled"))
     quota = item.get("daily_reply_quota")
-    effective_quota = 0 if disabled else int(quota) if quota is not None else int(config.get("daily_reply_quota", 20))
+    effective_quota = 0 if disabled else int(quota) if quota is not None else int(config.get("daily_reply_quota", 10))
     return {
         "user_id": item.get("user_id", ""),
         "daily_reply_quota": quota,
@@ -764,9 +823,9 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
             "max_num_results": bounded_int(rag.get("max_num_results"), int(config.get("rag_max_num_results", 3)), 1, 10),
         },
         "limits": {
-            "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 20)), 1, 10000),
+            "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 10)), 1, 10000),
             "web_ip_daily_quota": bounded_int(limits.get("web_ip_daily_quota"), int(config.get("web_ip_daily_quota", 20)), 0, 10000),
-            "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 500)), 0, 100000),
+            "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 1000)), 0, 100000),
             "mode_unit_costs": {
                 MODE_BAILIAN_RAG_FAST: bounded_int(
                     (limits.get("mode_unit_costs") or {}).get(MODE_BAILIAN_RAG_FAST) if isinstance(limits.get("mode_unit_costs"), dict) else None,
@@ -936,6 +995,17 @@ def save_images(files: list[FileStorage], upload_dir: Path, config: dict[str, An
         file.save(target)
         paths.append(target)
     return paths
+
+
+def reply_image_records(files: list[FileStorage], paths: list[Path]) -> list[dict[str, Any]]:
+    records = []
+    for file, path in zip(files, paths):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        records.append({"path": str(path), "original_name": file.filename or path.name, "size_bytes": size})
+    return records
 
 
 def unique_path(path: Path) -> Path:
@@ -1173,6 +1243,52 @@ def feedback_export_row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def feedback_export_fieldnames(include_screenshots: bool = False) -> list[str]:
+    fields = [
+        "created_at",
+        "user_id",
+        "conversation_id",
+        "run_id",
+        "mode",
+        "status",
+        "rating",
+        "notes",
+        "question",
+        "reply",
+        "risk_warning",
+        "image_count",
+        "reference_count",
+    ]
+    if include_screenshots:
+        fields.append("screenshots")
+    return fields
+
+
+def csv_text(rows: list[dict[str, Any]], fieldnames: list[str]) -> str:
+    handle = StringIO()
+    writer = DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return handle.getvalue()
+
+
+def safe_zip_image_path(item: dict[str, Any]) -> str:
+    run_id = secure_filename(str(item.get("run_id", ""))) or "run"
+    image_id = secure_filename(str(item.get("image_id", ""))) or uuid.uuid4().hex[:8]
+    source = Path(str(item.get("path", "")))
+    original = Path(str(item.get("original_name", "")))
+    suffix = (source.suffix or original.suffix or ".jpg").lower()
+    stem = secure_filename(original.stem) or "image"
+    return f"screenshots/{run_id}/{image_id}_{stem}{suffix}"
+
+
+def export_image_paths_by_run(images: list[dict[str, Any]]) -> dict[str, list[str]]:
+    output: dict[str, list[str]] = {}
+    for item in images:
+        output.setdefault(str(item.get("run_id", "")), []).append(safe_zip_image_path(item))
+    return output
+
+
 def public_upload(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "upload_id": item.get("upload_id", ""),
@@ -1180,6 +1296,31 @@ def public_upload(item: dict[str, Any]) -> dict[str, Any]:
         "size_bytes": item.get("size_bytes", 0),
         "created_at": item.get("created_at", ""),
     }
+
+
+def public_redeem_code(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": item.get("code", ""),
+        "daily_reply_quota": item.get("daily_reply_quota", 0),
+        "max_uses": item.get("max_uses", 0),
+        "used_count": item.get("used_count", 0),
+        "status": item.get("status", ""),
+        "expires_at": item.get("expires_at", ""),
+        "note": item.get("note", ""),
+        "created_at": item.get("created_at", ""),
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
+def redeem_code_error_message(code: str) -> str:
+    return {
+        "redeem_code_required": "请输入兑换码。",
+        "redeem_code_invalid": "兑换码不存在或已失效。",
+        "redeem_code_inactive": "兑换码已停用。",
+        "redeem_code_expired": "兑换码已过期。",
+        "redeem_code_exhausted": "兑换码已被用完。",
+        "redeem_code_already_used": "你已经使用过这个兑换码。",
+    }.get(code, "兑换失败，请稍后再试。")
 
 
 def public_announcement(item: dict[str, Any]) -> dict[str, Any]:
@@ -1273,7 +1414,7 @@ def admin_page_html() -> str:
         <div id="metrics" class="metrics"></div>
         <div class="secret-list" id="secrets"></div>
         <div class="actions" style="margin-top:14px">
-          <a class="button secondary" href="/api/v1/admin/feedback/export.csv" id="export">导出反馈 CSV</a>
+          <a class="button secondary" href="/api/v1/admin/feedback/export.zip" id="export">导出审核包 ZIP</a>
         </div>
       </div>
       <div class="panel">
@@ -1424,7 +1565,7 @@ def admin_page_html() -> str:
     async function downloadFeedbackCsv() {
       localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("导出中...");
-      const res = await fetch("/api/v1/admin/feedback/export.csv", {
+      const res = await fetch("/api/v1/admin/feedback/export.zip", {
         headers: { "Authorization": "Bearer " + tokenInput.value.trim() },
       });
       if (!res.ok) {
@@ -1436,7 +1577,7 @@ def admin_page_html() -> str:
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "baiou_feedback.csv";
+      link.download = "baiou_feedback_review.zip";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1447,7 +1588,7 @@ def admin_page_html() -> str:
       form.default_mode.value = cfg.runtime.default_mode || "bailian_rag_fast";
       form.vector_store_ids.value = (cfg.rag.vector_store_ids || []).join(",");
       form.rag_max_num_results.value = cfg.rag.max_num_results || 3;
-      form.daily_reply_quota.value = cfg.limits.daily_reply_quota || 20;
+      form.daily_reply_quota.value = cfg.limits.daily_reply_quota || 10;
       form.web_ip_daily_quota.value = cfg.limits.web_ip_daily_quota || 0;
       form.web_site_daily_quota.value = cfg.limits.web_site_daily_quota || 0;
       form.fast_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_fast || 1;

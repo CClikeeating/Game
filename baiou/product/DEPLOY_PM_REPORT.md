@@ -1,420 +1,126 @@
-# Baiou 产品端部署 PM 汇报
+# Baiou 小程序上线同步 PM 报告
 
-更新日期：2026-06-15
+更新日期：2026-06-18
 
-本文档用于交接当前产品端部署进度，重点说明已经完成的事情、暂未完成的事情、后续上线流程，以及 PM 需要配合提供的账号/配置。
+## 当前结论
 
-## 一、当前结论
+小程序还不能直接提审上线。后端、网页端和正式 HTTPS 域名已具备上线基础，但小程序需要完成微信后台配置、真实微信登录配置、真机回归和隐私材料确认。
 
-产品端已经具备“内测闭环”：
-
-- 小程序可以调用后端 API。
-- 后端可以走百炼快速模式和百炼质量模式生成回复。
-- 用户反馈可以写入服务器数据库。
-- 后台可以查看统计、查看反馈、导出 CSV。
-- 管理后台可以调整常用配置，例如默认模式、百炼知识库 ID、RAG 召回数量、上传限制、保留天数。
-- 服务器已经部署可访问，当前内测地址为 `http://101.133.161.248`。
-
-产品端暂时还不能作为正式公网小程序发布，主要卡在备案、HTTPS、微信合法域名、微信真实登录 AppSecret、安全加固这几项。
-
-## 二、本轮已经完成
-
-### 1. 服务器部署
-
-已在阿里云 Ubuntu 22.04 服务器部署产品 API。
-
-当前部署形态：
-
-- Nginx 对外提供 HTTP 服务。
-- Gunicorn 运行 Flask API。
-- systemd 服务名：`baiou`。
-- 服务器应用目录：`/opt/baiou/current`。
-- 服务器持久化目录：`/opt/baiou/shared`。
-
-当前对外内测地址：
+当前线上地址：
 
 ```text
-http://101.133.161.248
+https://baioulove.xyz
+https://baioulove.xyz/app
+https://baioulove.xyz/api/v1/health
 ```
 
-当前管理后台入口：
+## 本轮同步口径
+
+- 第一版免费使用，不接微信支付。
+- 小程序必须使用微信授权登录。
+- 每人每日免费额度默认 10。
+- 全站每日额度默认 1000。
+- 日常接话：`bailian_rag_fast`，扣 1。
+- 暧昧推荐：`bailian_rag_strategy_quality`，扣 2。
+- 旧模式 `bailian_rag_quality`、`bailian_rag_strategy_fast` 后端继续兜底为日常接话，不对用户展示。
+- 文字输入入口强制日常接话，不展示上传截图区域。
+- 截图回复入口可选日常接话/暧昧推荐。
+- 用户端保留“分析”，不展示截图理解和参考片段。
+- dry-run 不在用户端展示。
+- 充值付费改为“联系作者获取更多额度”，QQ：`1179123330`。
+- 小程序加入兑换码入口；后端已预留兑换码创建和兑换接口，具体兑换规则后续可调整。
+- 后台导出新增审核 ZIP，包含 `feedback.csv` 和用户上传截图，供人工审核。
+
+## 已完成的技术同步
+
+- 后端配置默认额度改为每人每日 10、全站每日 1000。
+- 模式扣费配置为日常接话 1、暧昧推荐 2。
+- 小程序正式环境 API 地址配置为 `https://baioulove.xyz`，开发环境仍可走本地地址。
+- 小程序登录去掉无 code 内测回退，正式环境依赖微信 `wx.login`。
+- 小程序回复页已改为文字输入/截图回复两个入口。
+- 小程序“我的”页已加入联系作者和兑换码入口。
+- 后端新增：
+  - `POST /api/v1/redeem-codes/redeem`
+  - `POST /api/v1/admin/redeem-codes`
+  - `GET /api/v1/admin/feedback/export.zip`
+- 后台原 CSV 导出保留，ZIP 审核包新增截图附件。
+
+## PM 需要操作
+
+1. 微信公众平台 -> 开发管理 -> 开发设置 -> 服务器域名：
+   - request 合法域名填 `https://baioulove.xyz`
+   - uploadFile 合法域名填 `https://baioulove.xyz`
+
+2. 微信公众平台 -> 开发管理：
+   - 提供小程序 `AppID`
+   - 提供小程序 `AppSecret`
+
+3. 服务器环境变量需要配置：
 
 ```text
-http://101.133.161.248/admin
-```
-
-注意：管理后台需要 token。token 只应保存在服务器环境变量或安全密码管理工具里，不应写进 README、代码、截图或聊天记录。
-
-当前网页 alpha 入口：
-
-```text
-http://101.133.161.248/app
-```
-
-网页 alpha 使用统一内测访问码进入。访问码只应配置在服务器环境变量中，不写入前端源码、仓库配置或公开文档。
-
-### 2. 百炼模式与知识库策略
-
-已确认产品端支持：
-
-- `bailian_rag_fast`：百炼快速模式。
-- `bailian_rag_quality`：百炼质量模式。
-
-当前百炼知识库 ID：
-
-```text
-n7s0ou2dpt
-```
-
-服务器现在不需要保存本地 455 条知识库正文。线上只保存百炼知识库 ID，通过百炼向量库召回知识。因此：
-
-- 用户请求和截图会经过我们的服务器。
-- 455 条知识库正文不需要上传到我们的服务器。
-- 百炼知识库 ID 放在服务器配置里是可以接受的，但仍不建议公开。
-
-RAG 召回数量已做成可配置项：
-
-- 默认值：`3`。
-- 可通过管理后台调整。
-- 也可通过环境变量 `BAIOU_RAG_MAX_NUM_RESULTS` 调整。
-
-### 3. 小程序真实登录链路
-
-后端已补上微信 `wx.login` 的 code 登录链路：
-
-```text
-小程序 wx.login
-  -> 后端 /api/v1/auth/login
-  -> 微信 code2Session
-  -> 后端生成本地 session token
-  -> 小程序后续请求携带 token
-```
-
-当前限制：
-
-- 服务器还没有配置小程序 `AppSecret`。
-- 因此线上仍保留内测登录回退。
-- 等拿到 `AppSecret` 后，需要关闭内测登录。
-
-正式切换时需要配置：
-
-```text
+BAIOU_WECHAT_APPID=小程序AppID
 BAIOU_WECHAT_SECRET=小程序AppSecret
 BAIOU_MINIPROGRAM_DEV_LOGIN=false
+BAIOU_DAILY_REPLY_QUOTA=10
+BAIOU_WEB_SITE_DAILY_QUOTA=1000
+BAIOU_WEB_IP_DAILY_QUOTA=0
+BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_strategy_quality=2
+BAIOU_CONTACT_QQ=1179123330
 ```
 
-### 4. 用户反馈机制
+4. 提供或确认提审材料：
+   - 用户协议链接或正文。
+   - 隐私政策链接或正文。
+   - 截图上传用途说明。
+   - 数据保留周期说明：默认截图和运行明细保留 30 天。
+   - 小程序类目、服务说明、审核截图。
+   - 草案见 `baiou/product/MINIPROGRAM_SUBMISSION_MATERIALS.md`。
 
-已建立用户反馈闭环：
+5. 确认后台数据使用边界：
+   - 谁可以下载审核 ZIP。
+   - 截图人工审核后如何保管、删除或脱敏。
+   - admin token 的保管人和轮换方式。
 
-- 用户可以点“有用/无用”。
-- 用户可以填写备注。
-- 反馈会写入服务器 SQLite 数据库。
-- 管理后台可以查看反馈。
-- 管理后台可以导出 CSV 表格。
+## 测试计划
 
-这部分后续可用于产品复盘，例如：
+- 微信开发者工具：
+  - 打开 URL 校验。
+  - 确认正式版 API 指向 `https://baioulove.xyz`。
+  - 微信登录成功。
+  - 文字输入不展示上传截图区域。
+  - 文字输入生成回复，扣 1。
+  - 截图回复上传图片成功。
+  - 日常接话生成回复，扣 1。
+  - 暧昧推荐生成回复，扣 2。
+  - 反馈成功。
+  - 兑换码输入后额度刷新。
 
-- 哪类截图经常被判定无用。
-- 哪些回复建议被用户否定。
-- 用户备注里是否集中出现某类问题。
+- 真机：
+  - 登录、上传、生成、反馈完整跑通。
+  - request/uploadFile 合法域名不报错。
+  - 弱网和大图上传提示正常。
 
-### 5. 后台统计与配置页
+- 后台：
+  - stats、users、ip-usage、feedback、reply-runs 可加载。
+  - 审核 ZIP 可下载。
+  - ZIP 内包含 `feedback.csv` 和截图文件。
+  - 后台创建兑换码后，小程序可兑换。
 
-已建立轻量管理后台，当前用于内测阶段够用。
+## 风险和建议顺序
 
-后台目前可看：
-
-- 用户量。
-- 会话量。
-- 回复请求量。
-- 上传量。
-- 反馈量。
-- 最近反馈明细。
-- 关键环境变量是否已配置。
-
-后台目前可改：
-
-- 默认回复模式。
-- 百炼知识库 ID。
-- RAG 召回数量。
-- 每日回复额度。
-- 每次最多上传图片数。
-- 单张图片大小限制。
-- 图片/运行记录保留天数。
-- 公告文案。
-
-后台配置持久化在服务器：
-
-```text
-/opt/baiou/shared/admin_config.json
-```
-
-### 6. 图片与数据保留策略
-
-已把截图和运行明细的默认保留期定为 30 天。
-
-当前策略：
-
-- 用户上传截图会经过服务器。
-- 截图用于当次模型分析和后续问题排查。
-- 默认 30 天后自动清理。
-- 服务器已配置每日自动清理任务。
-
-小程序前端已加隐私提示，表达为：
-
-```text
-截图仅用于本次分析与服务优化，不会长期保存，将在固定期限后自动删除。
-```
-
-清理脚本：
-
-```text
-python -m baiou.product.api.cleanup
-python -m baiou.product.api.cleanup --apply
-```
-
-不带 `--apply` 只预览，不删除；带 `--apply` 才真正删除。
-
-## 三、当前还没完成
-
-### 1. 备案
-
-域名备案还没通过。备案通过前不建议正式开放小程序。
-
-原因：
-
-- 微信小程序正式环境需要 HTTPS 合法域名。
-- 国内服务器绑定域名提供公网服务通常需要备案。
-- 备案未完成时，域名解析、HTTPS、微信合法域名配置都可以先不做或只做临时验证。
-
-### 2. 域名解析
-
-尚未把正式域名解析到服务器 IP。
-
-备案通过后再做：
-
-```text
-A 记录 -> 101.133.161.248
-```
-
-### 3. HTTPS
-
-当前内测是 HTTP：
-
-```text
-http://101.133.161.248
-```
-
-正式小程序必须使用 HTTPS。备案和域名解析完成后，需要申请证书并配置 Nginx。
-
-### 4. 微信合法域名
-
-微信公众平台后台还没配置：
-
-- request 合法域名。
-- uploadFile 合法域名。
-
-这一步要等正式 HTTPS 域名可用后再做。
-
-### 5. 小程序正式 API 地址
-
-当前小程序配置仍是内测地址或待切换状态。
-
-正式上线前需要把 `apiBaseUrl` 改为：
-
-```text
-https://正式域名
-```
-
-### 6. 微信 AppSecret
-
-服务器还没配置小程序 `AppSecret`。
-
-拿到后要做：
-
-- 配置 `BAIOU_WECHAT_SECRET`。
+P0：
+- 配置微信合法域名。
+- 配置 `BAIOU_WECHAT_APPID` / `BAIOU_WECHAT_SECRET`。
 - 关闭 `BAIOU_MINIPROGRAM_DEV_LOGIN`。
-- 重启后端服务。
-- 真机验证登录。
+- 真机完整回归。
+- 补齐用户协议、隐私政策、截图上传说明。
 
-### 7. 安全加固
+P1：
+- 确认截图审核 ZIP 的权限和保管流程。
+- 配置 SQLite、上传目录和后台配置文件备份。
+- 确认服务器只暴露 Nginx 80/443，Gunicorn 继续监听 `127.0.0.1:7871`。
 
-当前仍有几项正式开放前应完成的安全动作：
-
-- 更换已在沟通中出现过的服务器 root 密码。
-- 改用 SSH key 登录。
-- 关闭密码登录或至少限制 root 密码登录。
-- 管理后台只通过 HTTPS 使用。
-- 管理后台 token 定期更换。
-- SQLite 数据库和后台配置文件定期备份。
-
-### 8. 支付
-
-支付入口目前仍是占位能力，没有接微信支付。
-
-如果第一版只是内测或免费试用，可以暂时不接支付。正式商业化前需要单独做支付链路、订单、权益、退款和对账。
-
-## 四、PM 需要配合解决什么
-
-### 必须项
-
-1. 等域名备案通过。
-2. 提供正式域名。
-3. 在微信公众平台提供小程序 `AppSecret`。
-4. 备案后把正式域名加到微信合法域名。
-5. 确认是否第一版需要付费；如果不需要，支付继续保留占位。
-6. 确认隐私提示是否需要更正式的产品文案。
-
-### 建议项
-
-1. 更换服务器 root 密码。
-2. 提供或确认 SSH key 登录方式。
-3. 确认后台管理 token 的保管人和轮换方式。
-4. 确认后台反馈 CSV 的使用人，避免用户数据扩散。
-
-## 五、技术侧后续怎么接
-
-备案通过后按这个顺序做：
-
-```text
-1. 域名 A 记录解析到 101.133.161.248
-2. 等 DNS 生效
-3. 配置 Nginx server_name
-4. 申请并配置 HTTPS 证书
-5. 后端健康检查
-6. 小程序 apiBaseUrl 切换到 https://正式域名
-7. 微信公众平台配置 request/uploadFile 合法域名
-8. 配置 BAIOU_WECHAT_SECRET
-9. 关闭 BAIOU_MINIPROGRAM_DEV_LOGIN
-10. 真机测试登录、上传、回复、反馈、后台统计、CSV 导出
-11. 提交小程序审核
-```
-
-## 六、运维常用命令
-
-查看后端服务状态：
-
-```bash
-systemctl status baiou
-```
-
-查看最近日志：
-
-```bash
-journalctl -u baiou -n 100
-```
-
-重启后端服务：
-
-```bash
-systemctl restart baiou
-```
-
-预览过期文件清理：
-
-```bash
-cd /opt/baiou/current
-python -m baiou.product.api.cleanup
-```
-
-执行过期文件清理：
-
-```bash
-cd /opt/baiou/current
-python -m baiou.product.api.cleanup --apply
-```
-
-服务器主要持久化文件：
-
-```text
-/opt/baiou/shared/app.db
-/opt/baiou/shared/admin_config.json
-/opt/baiou/shared/uploads/
-```
-
-## 七、本轮明确不做什么
-
-为了避免范围失控，本轮没有做：
-
-- 不接正式支付。
-- 不提交小程序审核。
-- 不做完整 CRM 或复杂数据后台。
-- 不把 455 条本地知识库正文上传到服务器。
-- 不在代码或文档里写死服务器密码、后台 token、模型密钥。
-- 不把轻量 Flask 服务重构成大型后端框架。
-- 不做复杂实时监控大屏，只做了内测够用的统计页。
-
-## 网页 alpha 部署补充
-
-短期内测可以继续使用 IP + HTTP：
-
-```text
-http://101.133.161.248/app
-```
-
-如果域名 `baioulove2.online` 已解析到服务器公网 IP，可先通过 HTTP 小范围测试：
-
-```text
-http://baioulove2.online/app
-```
-
-正式面向更多用户前建议补 HTTPS，再切到：
-
-```text
-https://baioulove2.online/app
-```
-
-建议服务器环境变量：
-
-```text
-BAIOU_WEB_ACCESS_CODES=内测访问码
-BAIOU_WEB_IP_DAILY_QUOTA=20
-BAIOU_WEB_SITE_DAILY_QUOTA=300
-BAIOU_MODE_UNIT_COSTS=bailian_rag_fast=1,bailian_rag_quality=2
-BAIOU_MINIPROGRAM_DEV_LOGIN=false
-BAIOU_MINIPROGRAM_DEBUG=false
-```
-
-安全底线：
-
-- 公网只暴露 Nginx 的 80/443。
-- Gunicorn/Flask 继续监听 `127.0.0.1:7871`，不要让 7871 直接公网可访问。
-- `/admin` 继续使用 Authorization token，不把 token 放 URL。
-- 内测访问码、admin token、百炼 key、微信 secret 都只放服务器环境变量。
-- 每天执行一次过期文件清理：
-
-```bash
-cd /opt/baiou/current
-python -m baiou.product.api.cleanup --apply
-```
-
-## 八、当前风险
-
-1. 当前内测地址是 HTTP，不适合公开传播。
-2. 未配置 AppSecret 前，真实微信登录没有完全闭环。
-3. 管理后台在 HTTPS 完成前只适合内部使用。
-4. SQLite 适合 MVP 和内测，后续访问量增大后建议迁移到云数据库或 PostgreSQL/MySQL。
-5. 3M 带宽对少量内测够用，但如果大量用户上传图片，公网带宽会成为瓶颈。
-
-## 九、建议下一步任务
-
-优先级 P0：
-
-- 备案通过后配置域名、HTTPS、微信合法域名。
-- 配置小程序 `AppSecret` 并关闭内测登录。
-- 真机跑一遍上传、回复、反馈、导出 CSV。
-- 更换服务器密码并切到 SSH key。
-
-优先级 P1：
-
-- 增加 SQLite 和后台配置定期备份。
-- 后台只允许 HTTPS 访问。
-- 增加简单异常告警，例如服务不可用、模型调用失败率过高。
-- 整理小程序提审材料和隐私说明。
-
-优先级 P2：
-
-- 接微信支付。
-- 把统计后台升级为更完整的数据看板。
-- 访问量上来后迁移数据库和对象存储。
+P2：
+- 后续再细化兑换码规则，例如有效期、可用次数、提升额度策略。
+- 后续访问量上来后迁移数据库和对象存储。
+- 正式商业化前再接微信支付。

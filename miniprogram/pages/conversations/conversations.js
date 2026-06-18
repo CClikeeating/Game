@@ -17,7 +17,7 @@ Page({
   async init() {
     try {
       if (!app.globalData.token) {
-        const login = await api.request("/api/v1/auth/login", { method: "POST", data: {} })
+        const login = await this.loginWithWechatCode()
         app.globalData.token = login.token
         wx.setStorageSync("baiou_token", login.token)
       }
@@ -27,6 +27,24 @@ Page({
     } catch (err) {
       this.toast(err.message || "加载失败")
     }
+  },
+
+  loginWithWechatCode() {
+    return new Promise((resolve, reject) => {
+      wx.login({
+        success: async res => {
+          try {
+            const login = await api.request("/api/v1/auth/login", { method: "POST", data: { code: res.code } })
+            resolve(login)
+          } catch (err) {
+            reject(err)
+          }
+        },
+        fail: () => {
+          reject({ message: "微信登录失败，请稍后重试" })
+        }
+      })
+    })
   },
 
   onTitleInput(e) {
