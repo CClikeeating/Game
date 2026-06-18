@@ -54,9 +54,9 @@
     <header>
       <div>
         <h1>Baiou 回复测试台</h1>
-        <p class="sub">文本/截图输入 -> 质量模式或百炼 RAG 快速模式 -> 回复建议。</p>
+        <p class="sub">文本/截图输入 -> 日常接话或暧昧推荐 -> 回复建议。</p>
       </div>
-      <div class="sub">质量模式保留三段链路；百炼 RAG 快速模式用于压缩调用次数。</div>
+      <div class="sub">日常接话低压力延续话题；暧昧推荐用于高框架推拉和测试破解。</div>
     </header>
     <main class="layout">
       <section class="panel">
@@ -73,7 +73,7 @@
           <div class="field">
             <label for="index_path">片段索引路径</label>
             <input id="index_path" name="index_path" type="text" value="{{ form.index_path }}" placeholder="默认 outputs/baiou/cases/knowledge/current/local_index/segments_index.jsonl">
-            <div class="hint">质量模式使用本地索引；百炼 RAG 快速模式会忽略此路径，改用百炼知识库。</div>
+            <div class="hint">当前产品模式使用百炼知识库；本地索引路径仅用于旧调试入口。</div>
           </div>
           <div class="field">
             <label for="mode">运行模式</label>
@@ -82,7 +82,7 @@
               <option value="{{ value }}" {% if form.mode == value %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
             </select>
-            <div class="hint">百炼 RAG 快速模式：文本 1 次模型调用；截图 2 次模型调用。</div>
+            <div class="hint">日常接话更快更轻；暧昧推荐会多一次策略判断。</div>
           </div>
           <div class="field">
             <label for="images">聊天截图</label>
@@ -197,7 +197,6 @@
   </script>
 </body>
 </html>
-
 
 
 

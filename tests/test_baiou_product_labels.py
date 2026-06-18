@@ -60,3 +60,14 @@ def test_product_label_prompts_use_v02_taxonomy_without_old_output_stage() -> No
         assert "高热度信号" in text
         assert "性张力玩笑" in text
         assert "邀约期" not in text
+
+
+def test_product_label_prompts_separate_relationship_pace_from_boundary() -> None:
+    prompt = build_label_prompt("女生/对方最后一句：我觉得我们发展太快了")
+    quality_prompt = build_quality_label_prompt("女生/对方最后一句：我们才认识几天就在一起了")
+
+    assert "关系节奏质疑" in prompt
+    assert "不要默认标成 `女生状态=防御/拒绝`" in prompt
+    assert "关系节奏测试" in quality_prompt
+    assert "不能进入顺从模式" in quality_prompt
+    assert "明确停止信号" in quality_prompt
