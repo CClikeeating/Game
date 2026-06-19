@@ -15,11 +15,9 @@
   <view class="entry-strip surface">
     <view class="entry-pill {{entryType === 'screenshot' ? 'active' : ''}}" data-entry="screenshot" bindtap="selectEntry">
       <view>上传截图</view>
-      <text>暧昧推荐，扣 {{strategyCost}}</text>
     </view>
     <view class="entry-pill {{entryType === 'text_only' ? 'active' : ''}}" data-entry="text_only" bindtap="selectEntry">
       <view>文字输入</view>
-      <text>日常接话，扣 {{fastCost}}</text>
     </view>
   </view>
 
@@ -28,7 +26,6 @@
       <view class="upload-copy">
         <view class="upload-title">{{images.length ? "已上传截图" : "请上传截图"}}</view>
         <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。需要截图后才能继续。</view>
-        <view class="privacy-note">截图仅用于本次识别和服务质量分析，不会长期保存，将在固定期限后自动删除。</view>
       </view>
       <button class="upload-btn" bindtap="chooseImages">{{images.length ? "继续加" : "上传"}}</button>
     </view>
@@ -62,8 +59,8 @@
     <view class="mode-block">
       <view class="mode-row">
         <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
-          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · {{fastCost}} 积分</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · {{strategyCost}} 积分</view>
         </view>
       </view>
       <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "上传截图默认使用暧昧推荐，也可切到日常接话。"}}</view>
@@ -90,8 +87,8 @@
     <view class="mode-block">
       <view class="mode-row">
         <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
-          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · {{fastCost}} 积分</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · {{strategyCost}} 积分</view>
         </view>
       </view>
       <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "上传截图默认使用暧昧推荐，也可切到日常接话。"}}</view>
