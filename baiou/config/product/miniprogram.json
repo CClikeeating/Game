@@ -29,7 +29,7 @@
   "web_alpha": {"access_required": false, "access_codes": [], "access_code_hashes": []},
   "retention": {"upload_days": 30, "run_days": 30},
   "announcements": [
-    {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放回复模块，聊天窗口、反馈和额度已经接入。", "status": "active"}
+    {"announcement_id": "welcome", "title": "Baiou 内测版", "content": "当前版本优先开放分享模块，窗口、反馈和额度已经接入。", "status": "active"}
   ],
   "contact": {"qq": "1179123330"},
   "billing": {

@@ -1,34 +1,31 @@
 <view class="chat-page">
   <view class="topbar surface">
-    <button class="icon-btn" aria-label="打开聊天窗口" bindtap="openDrawer">☰</button>
+    <button class="icon-btn" aria-label="打开窗口" bindtap="openDrawer">☰</button>
     <view class="grow">
-      <view class="chat-title">{{currentConversation.title || "默认聊天"}}</view>
+      <view class="chat-title">{{currentConversation.title || "默认窗口"}}</view>
     </view>
     <view class="quota-pill">剩 {{serviceReady ? limits.daily_reply_remaining : "--" }} 次</view>
   </view>
 
   <view class="quick-guide">
-    <view class="guide-text">{{entryType === "text_only" ? "输入对方上一句话，我给你生成可直接发送的话。" : "上传聊天截图 + 用户问题，我给你生成可直接发送的话。"}}</view>
+    <view class="guide-text">{{entryType === "text_only" ? "输入对方上一句话，给你一条可参考的接话。" : "上传截图，给你一条可参考的接话。"}}</view>
     <button class="small-btn soft" bindtap="startNewConversation">新窗口</button>
   </view>
 
   <view class="entry-strip surface">
+    <view class="entry-pill {{entryType === 'screenshot' ? 'active' : ''}}" data-entry="screenshot" bindtap="selectEntry">
+      <view>上传截图</view>
+    </view>
     <view class="entry-pill {{entryType === 'text_only' ? 'active' : ''}}" data-entry="text_only" bindtap="selectEntry">
       <view>文字输入</view>
-      <text>日常接话，扣 {{fastCost}}</text>
-    </view>
-    <view class="entry-pill {{entryType === 'screenshot' ? 'active' : ''}}" data-entry="screenshot" bindtap="selectEntry">
-      <view>截图回复</view>
-      <text>上传聊天截图</text>
     </view>
   </view>
 
   <view class="main-card">
     <view wx:if="{{entryType === 'screenshot'}}" class="upload-panel {{images.length ? 'ready' : ''}}">
       <view class="upload-copy">
-        <view class="upload-title">{{images.length ? "已上传聊天截图" : "请上传聊天截图"}}</view>
-        <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。没有截图不能生成。</view>
-        <view class="privacy-note">截图仅用于生成回复和服务质量分析，不会长期保存，将在固定期限后自动删除。</view>
+        <view class="upload-title">{{images.length ? "已上传截图" : "请上传截图"}}</view>
+        <view class="muted">最多 {{limits.max_images_per_reply || 3}} 张，单张 {{limits.max_image_mb || 8}}MB。需要截图后才能继续。</view>
       </view>
       <button class="upload-btn" bindtap="chooseImages">{{images.length ? "继续加" : "上传"}}</button>
     </view>
@@ -42,7 +39,7 @@
     </view>
 
     <view class="compact-field">
-      <view class="label">{{entryType === "text_only" ? "对方上一句话" : "用户问题"}}</view>
+      <view class="label">{{entryType === "text_only" ? "对方上一句话" : "当前问题"}}</view>
       <textarea class="question-input" placeholder="{{entryType === 'text_only' ? '把对方上一句话粘到这里' : '我该怎么回'}}" value="{{question}}" bindinput="onQuestionInput"></textarea>
     </view>
 
@@ -55,20 +52,20 @@
   <view wx:if="{{result}}" class="result-card">
     <view class="result-head">
       <view class="grow">
-        <view class="result-title">推荐回复</view>
+        <view class="result-title">推荐接话</view>
       </view>
       <view class="status-dot">{{result.status}}</view>
     </view>
     <view class="mode-block">
       <view class="mode-row">
         <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
-          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · {{fastCost}} 积分</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · {{strategyCost}} 积分</view>
         </view>
       </view>
-      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "日常接话稳妥接住话题；暧昧推荐更偏升温和推拉。"}}</view>
+      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "上传截图默认使用暧昧推荐，也可切到日常接话。"}}</view>
     </view>
-    <view class="reply-box">{{result.answer.reply || "暂无回复"}}</view>
+    <view class="reply-box">{{result.answer.reply || "暂无内容"}}</view>
 
     <view class="analysis-block">
       <view class="analysis-title">分析</view>
@@ -85,33 +82,33 @@
 
   <view wx:else class="result-card empty-result">
     <view class="result-head compact">
-      <view class="result-title">推荐回复</view>
+      <view class="result-title">推荐接话</view>
     </view>
     <view class="mode-block">
       <view class="mode-row">
         <view class="mode-strip {{entryType === 'text_only' ? 'one' : ''}}">
-          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · 扣 {{fastCost}}</view>
-          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · 扣 {{strategyCost}}</view>
+          <view class="mode-pill {{mode === 'bailian_rag_fast' ? 'active' : ''}}" data-mode="bailian_rag_fast" bindtap="selectMode">日常接话 · {{fastCost}} 积分</view>
+          <view wx:if="{{entryType === 'screenshot'}}" class="mode-pill {{mode === 'bailian_rag_strategy_quality' ? 'active' : ''}}" data-mode="bailian_rag_strategy_quality" bindtap="selectMode">暧昧推荐 · {{strategyCost}} 积分</view>
         </view>
       </view>
-      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "日常接话稳妥接住话题；暧昧推荐更偏升温和推拉。"}}</view>
+      <view class="mode-help">{{entryType === "text_only" ? "文字输入固定使用日常接话。" : "上传截图默认使用暧昧推荐，也可切到日常接话。"}}</view>
     </view>
-    <view class="empty-reply">{{entryType === "text_only" ? "输入文字后，生成的回复会出现在这里。" : "上传聊天截图后，生成的回复会出现在这里。"}}</view>
+    <view class="empty-reply">{{entryType === "text_only" ? "输入文字后，结果会出现在这里。" : "上传截图后，结果会出现在这里。"}}</view>
     <view class="empty-analysis">
       <view class="analysis-title">分析</view>
-      <view class="analysis-text">生成后会一起展示为什么这么回。</view>
+      <view class="analysis-text">开始后会一起展示为什么这么处理。</view>
     </view>
   </view>
 
   <view class="bottom-action">
-    <button class="generate-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="submitReply">生成推荐回复</button>
+    <button class="generate-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="submitReply">开始</button>
   </view>
 
   <view wx:if="{{drawerOpen}}" class="drawer-mask" bindtap="closeDrawer"></view>
   <view class="drawer {{drawerOpen ? 'open' : ''}}">
     <view class="drawer-head">
       <view>
-        <view class="section-title">聊天窗口</view>
+        <view class="section-title">窗口</view>
         <view class="muted">最多 {{limits.max_conversations_per_user || 0}} 个</view>
       </view>
       <button class="icon-btn light" bindtap="closeDrawer">×</button>
