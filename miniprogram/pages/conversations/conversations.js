@@ -52,7 +52,7 @@ Page({
       } else {
         await api.request("/api/v1/conversations", {
           method: "POST",
-          data: { title: this.data.title || "新的聊天", background: this.data.background }
+          data: { title: this.data.title || "新窗口", background: this.data.background }
         })
       }
       this.setData({ title: "", background: "", editingId: "" })

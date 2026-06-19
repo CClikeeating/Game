@@ -22,8 +22,8 @@ Page({
   data: {
     question: "我该怎么回",
     context: "",
-    entryType: "text_only",
-    mode: MODE_FAST,
+    entryType: "screenshot",
+    mode: MODE_STRATEGY_QUALITY,
     fastCost: 1,
     strategyCost: 2,
     images: [],
@@ -110,7 +110,7 @@ Page({
       } else {
         const data = await api.request("/api/v1/conversations", {
           method: "POST",
-          data: { title: this.data.draftTitle || "新的聊天", background: this.data.draftBackground }
+          data: { title: this.data.draftTitle || "新窗口", background: this.data.draftBackground }
         })
         const id = data.conversation && data.conversation.conversation_id
         if (id) {
@@ -172,6 +172,8 @@ Page({
     if (entryType === "text_only") {
       update.mode = MODE_FAST
       update.images = []
+    } else {
+      update.mode = MODE_STRATEGY_QUALITY
     }
     this.setData(update)
   },
@@ -215,7 +217,7 @@ Page({
 
   async submitReply() {
     if (!this.data.currentConversation.conversation_id) {
-      this.toast("请先创建聊天窗口")
+      this.toast("请先创建窗口")
       return
     }
     if (!this.data.question.trim()) {
@@ -224,7 +226,7 @@ Page({
     }
     const textOnly = this.data.entryType === "text_only"
     if (!textOnly && !this.data.images.length) {
-      this.toast("请上传聊天截图")
+      this.toast("请上传截图")
       return
     }
     this.setData({ loading: true })
@@ -258,7 +260,7 @@ Page({
         analysisOpen: false
       })
     } catch (err) {
-      this.toast(err.message || "生成失败")
+      this.toast(err.message || "处理失败")
     } finally {
       this.setData({ loading: false })
     }
