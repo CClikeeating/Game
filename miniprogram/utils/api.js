@@ -119,4 +119,35 @@ function uploadImage(filePath) {
   })
 }
 
-module.exports = { request, uploadImage, ensureLogin, reloginAfterAuthError, clearSession, isAuthError, loginWithWechatCode }
+function uploadAvatar(filePath) {
+  return new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: `${baseUrl()}/api/v1/me/avatar`,
+      filePath,
+      name: "avatar",
+      timeout: 120000,
+      header: {
+        Authorization: token() ? `Bearer ${token()}` : ""
+      },
+      success(res) {
+        let data = {}
+        try {
+          data = JSON.parse(res.data || "{}")
+        } catch (err) {
+          reject({ code: "invalid_avatar_response", message: "头像返回异常" })
+          return
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300 && data.ok !== false) {
+          resolve(data)
+        } else {
+          reject({ ...(data.error || { code: "avatar_upload_failed", message: "头像上传失败" }), statusCode: res.statusCode })
+        }
+      },
+      fail(err) {
+        reject({ code: "avatar_upload_failed", message: networkErrorMessage(err.errMsg) })
+      }
+    })
+  })
+}
+
+module.exports = { request, uploadImage, uploadAvatar, ensureLogin, reloginAfterAuthError, clearSession, isAuthError, loginWithWechatCode }

@@ -198,7 +198,7 @@ https://baioulove.xyz/api/v1/health
 正式开放前建议补齐：
 
 - 改掉已经在对话中出现过的服务器 root 密码，改用 SSH key 登录。
-- 管理后台 token 仅在服务器环境变量中保存，不写入前端或公开文档。
+- 管理后台改为密码登录；服务器只保存密码 hash，后台登录 cookie 默认 7 天有效。
 
 旧云部署交接长文已移到 `docs/archive/product-cloud-handoff-20260616.md`。当前部署、提审和服务器配置以 `baiou/product/DEPLOY_PM_REPORT.md` 为准。
 
@@ -208,7 +208,7 @@ https://baioulove.xyz/api/v1/health
 
 已处理：
 
-- 后台接口不再接受 `?token=`，admin token 只通过请求头传递。
+- 后台接口不再接受 `?token=`；管理页改为密码登录并使用 HttpOnly cookie，header token 仅作为脚本兼容通道。
 - SQLite 启动时会给旧产品库补齐 v0.3 需要的缺失字段，降低共享库切 release 风险。
 - 小程序登录逻辑集中到 `miniprogram/utils/api.js`；缓存 token 失效遇到 401 时，会清缓存并自动重新 `wx.login` 一次。
 - 旧本地网页调试台归档到 `baiou/product/archive/legacy_web/`，不再放在产品端主运行目录。

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
+import secrets
+import time
 import uuid
 from csv import DictWriter
 from datetime import datetime
@@ -15,6 +18,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from flask import Flask, Response, jsonify, request
 from werkzeug.datastructures import FileStorage
+from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
 from baiou.common.io import PROJECT_ROOT, load_data, resolve_path
@@ -28,6 +32,7 @@ from baiou.product.runtime.reply_engine import (
 from baiou.product.storage import ProductStore
 
 CONFIG_ROOT = PROJECT_ROOT / "baiou" / "config" / "product"
+ADMIN_LOGIN_FAILURES: dict[str, list[float]] = {}
 USER_ALLOWED_REPLY_MODES = {MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY}
 USER_MODE_LABELS = {
     MODE_BAILIAN_RAG_FAST: "日常接话",
@@ -66,7 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "modes": USER_MODE_LABELS,
     },
     "auth": {"default_user_id": "dev_user", "dev_login_enabled": True, "session_days": 30, "wechat_appid": "", "wechat_secret": ""},
-    "admin": {"token": ""},
+    "admin": {"token": "", "password_hash": "", "session_days": 7, "cookie_secure": True, "login_max_attempts": 5, "login_window_seconds": 600},
     "network": {"trusted_proxy_ips": ["127.0.0.1", "::1"]},
     "web_alpha": {"access_required": False, "access_codes": [], "access_code_hashes": []},
     "retention": {"upload_days": 30, "run_days": 30},
@@ -140,6 +145,38 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             return fail("auth_required", "请先登录。", 401)
         user = ensure_product_user(store, config, user_id)
         return ok({"user": public_user(user), "limits": usage_payload(store, config, user_id)})
+
+    @app.patch("/api/v1/me/profile")
+    def profile_update():
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
+        payload = request.get_json(silent=True) or {}
+        user = store.update_user_profile(
+            user_id,
+            str(payload.get("nickname", "")).strip(),
+            str(payload.get("avatar_url", "")).strip(),
+        )
+        return ok({"user": public_user(user)})
+
+    @app.post("/api/v1/me/avatar")
+    def avatar_upload():
+        user_id = current_user_id(config, store)
+        if not user_id:
+            return fail("auth_required", "请先登录。", 401)
+        files = request.files.getlist("avatar") or request.files.getlist("file")
+        validation_error = validate_images(files[:1], {**config, "max_images_per_reply": 1})
+        if validation_error:
+            code, message = validation_error
+            return fail(code, message, 400)
+        if not files:
+            return fail("avatar_required", "请先选择头像。", 400)
+        saved = save_images([files[0]], avatar_upload_dir(config, user_id), config)
+        if not saved:
+            return fail("avatar_save_failed", "头像保存失败。", 500)
+        avatar_url = avatar_public_url(saved[0])
+        user = store.update_user_profile(user_id, avatar_url=avatar_url)
+        return ok({"avatar_url": avatar_url, "user": public_user(user)}, 201)
 
     @app.get("/api/v1/conversations")
     def conversations_index():
@@ -312,6 +349,35 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         stats = store.admin_stats()
         stats["site_quota"] = site_quota_payload(store, config)
         return ok({"stats": stats})
+
+    @app.post("/api/v1/admin/login")
+    def admin_login():
+        payload = request.get_json(silent=True) or {}
+        password = str(payload.get("password", ""))
+        if not config.get("admin_password_hash"):
+            return fail("admin_password_not_configured", "管理员密码未配置。", 503)
+        if admin_login_limited(config):
+            return fail("admin_login_limited", "尝试次数过多，请稍后再试。", 429)
+        if not admin_password_valid(config, password):
+            record_admin_login_failure(config)
+            return fail("admin_unauthorized", "密码不正确。", 401)
+        clear_admin_login_failures(config)
+        response, status = ok({"admin": {"authenticated": True, "session_days": int(config.get("admin_session_days", 7))}})
+        response.set_cookie(
+            admin_cookie_name(config),
+            make_admin_cookie(config),
+            max_age=int(config.get("admin_session_days", 7)) * 24 * 60 * 60,
+            httponly=True,
+            secure=bool(config.get("admin_cookie_secure", True)),
+            samesite=str(config.get("admin_cookie_samesite", "Lax")),
+        )
+        return response, status
+
+    @app.post("/api/v1/admin/logout")
+    def admin_logout():
+        response, status = ok({"admin": {"authenticated": False}})
+        response.delete_cookie(admin_cookie_name(config))
+        return response, status
 
     @app.get("/api/v1/admin/users")
     def admin_users():
@@ -544,6 +610,14 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
     def billing_orders():
         return fail("payment_not_enabled", "第一期暂未接入真实支付。", 501)
 
+    @app.get("/api/v1/avatars/<path:filename>")
+    def avatar_file(filename: str):
+        root = avatar_root(config).resolve()
+        path = (root / filename).resolve()
+        if root not in path.parents or not path.is_file():
+            return fail("avatar_not_found", "头像不存在。", 404)
+        return Response(path.read_bytes(), mimetype=image_mimetype(path))
+
     @app.get("/admin")
     def admin_page():
         return Response(admin_page_html(), mimetype="text/html; charset=utf-8")
@@ -627,6 +701,13 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "wechat_appid": os.environ.get("BAIOU_WECHAT_APPID") or auth.get("wechat_appid", ""),
         "wechat_secret": os.environ.get("BAIOU_WECHAT_SECRET") or auth.get("wechat_secret", ""),
         "admin_token": os.environ.get("BAIOU_ADMIN_TOKEN") or admin.get("token", ""),
+        "admin_password_hash": os.environ.get("BAIOU_ADMIN_PASSWORD_HASH") or admin.get("password_hash", ""),
+        "admin_session_days": int(os.environ.get("BAIOU_ADMIN_SESSION_DAYS") or admin.get("session_days", 7)),
+        "admin_cookie_secure": parse_bool(os.environ.get("BAIOU_ADMIN_COOKIE_SECURE"), bool(admin.get("cookie_secure", True))),
+        "admin_cookie_samesite": os.environ.get("BAIOU_ADMIN_COOKIE_SAMESITE") or admin.get("cookie_samesite", "Lax"),
+        "admin_cookie_name": os.environ.get("BAIOU_ADMIN_COOKIE_NAME") or admin.get("cookie_name", "baiou_admin_session"),
+        "admin_login_max_attempts": int(os.environ.get("BAIOU_ADMIN_LOGIN_MAX_ATTEMPTS") or admin.get("login_max_attempts", 5)),
+        "admin_login_window_seconds": int(os.environ.get("BAIOU_ADMIN_LOGIN_WINDOW_SECONDS") or admin.get("login_window_seconds", 600)),
         "admin_config_path": str(admin_config_path),
         "trusted_proxy_ips": configured_list(os.environ.get("BAIOU_TRUSTED_PROXY_IPS") or network.get("trusted_proxy_ips", ["127.0.0.1", "::1"])),
         "upload_retention_days": int(os.environ.get("BAIOU_UPLOAD_RETENTION_DAYS") or retention.get("upload_days", 30)),
@@ -781,14 +862,82 @@ def wechat_user_id(openid: str) -> str:
 
 
 def require_admin(config: dict[str, Any]):
+    if admin_cookie_valid(config, request.cookies.get(admin_cookie_name(config), "")):
+        return None
     token = str(config.get("admin_token", "")).strip()
-    if not token:
+    if not token and not config.get("admin_password_hash"):
         return fail("admin_not_configured", "管理员 token 未配置。", 503)
     auth = request.headers.get("Authorization", "").strip()
     provided = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("X-Baiou-Admin-Token", "").strip()
-    if provided != token:
+    if not token or provided != token:
         return fail("admin_unauthorized", "没有后台访问权限。", 401)
     return None
+
+
+def admin_cookie_name(config: dict[str, Any]) -> str:
+    return str(config.get("admin_cookie_name") or "baiou_admin_session")
+
+
+def admin_cookie_secret(config: dict[str, Any]) -> str:
+    return str(config.get("admin_password_hash") or config.get("admin_token") or "")
+
+
+def make_admin_cookie(config: dict[str, Any]) -> str:
+    expires = int(time.time()) + int(config.get("admin_session_days", 7)) * 24 * 60 * 60
+    nonce = secrets.token_urlsafe(16)
+    body = f"{expires}.{nonce}"
+    signature = hmac.new(admin_cookie_secret(config).encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{body}.{signature}"
+
+
+def admin_cookie_valid(config: dict[str, Any], cookie: str) -> bool:
+    secret = admin_cookie_secret(config)
+    if not secret or not cookie:
+        return False
+    parts = str(cookie).split(".")
+    if len(parts) != 3:
+        return False
+    expires, nonce, signature = parts
+    try:
+        if int(expires) < int(time.time()):
+            return False
+    except ValueError:
+        return False
+    body = f"{expires}.{nonce}"
+    expected = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+def admin_password_valid(config: dict[str, Any], password: str) -> bool:
+    password_hash = str(config.get("admin_password_hash", "")).strip()
+    return bool(password_hash and password and check_password_hash(password_hash, password))
+
+
+def admin_login_key(config: dict[str, Any]) -> str:
+    return client_ip_info(config)["hash"]
+
+
+def current_admin_login_failures(config: dict[str, Any]) -> list[float]:
+    key = admin_login_key(config)
+    window = max(1, int(config.get("admin_login_window_seconds", 600)))
+    cutoff = time.time() - window
+    failures = [stamp for stamp in ADMIN_LOGIN_FAILURES.get(key, []) if stamp >= cutoff]
+    ADMIN_LOGIN_FAILURES[key] = failures
+    return failures
+
+
+def admin_login_limited(config: dict[str, Any]) -> bool:
+    max_attempts = max(1, int(config.get("admin_login_max_attempts", 5)))
+    return len(current_admin_login_failures(config)) >= max_attempts
+
+
+def record_admin_login_failure(config: dict[str, Any]) -> None:
+    key = admin_login_key(config)
+    ADMIN_LOGIN_FAILURES[key] = [*current_admin_login_failures(config), time.time()]
+
+
+def clear_admin_login_failures(config: dict[str, Any]) -> None:
+    ADMIN_LOGIN_FAILURES.pop(admin_login_key(config), None)
 
 
 def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -831,6 +980,7 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
             "wechat_appid": bool(config.get("wechat_appid")),
             "wechat_secret": bool(config.get("wechat_secret")),
             "admin_token": bool(config.get("admin_token")),
+            "admin_password": bool(config.get("admin_password_hash")),
             "web_access_code": bool(config.get("web_access_codes") or config.get("web_access_code_hashes")),
         },
         "paths": {
@@ -860,6 +1010,8 @@ def public_admin_user(item: dict[str, Any], config: dict[str, Any]) -> dict[str,
     return {
         "user_id": item.get("user_id", ""),
         "nickname": item.get("nickname", ""),
+        "avatar_url": item.get("avatar_url", ""),
+        "profile_updated_at": item.get("profile_updated_at", ""),
         "has_openid": bool(item.get("has_openid")),
         "plan": item.get("plan", "trial"),
         "credits_balance": int(item.get("credits_balance", 0) or 0),
@@ -1108,6 +1260,29 @@ def save_images(files: list[FileStorage], upload_dir: Path, config: dict[str, An
     return paths
 
 
+def avatar_root(config: dict[str, Any]) -> Path:
+    return resolve_path(config["upload_root"]) / "avatars"
+
+
+def avatar_upload_dir(config: dict[str, Any], user_id: str) -> Path:
+    safe_user = secure_filename(user_id) or "user"
+    return avatar_root(config) / safe_user
+
+
+def avatar_public_url(path: Path) -> str:
+    root = path.parent.parent
+    return "/api/v1/avatars/" + parse.quote(str(path.relative_to(root)).replace("\\", "/"))
+
+
+def image_mimetype(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/jpeg"
+
+
 def reply_image_records(files: list[FileStorage], paths: list[Path]) -> list[dict[str, Any]]:
     records = []
     for file, path in zip(files, paths):
@@ -1235,7 +1410,13 @@ def increment_reply_quota_units(store: ProductStore, config: dict[str, Any], uni
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {"user_id": user.get("user_id", ""), "nickname": user.get("nickname", ""), "plan": user.get("plan", "trial")}
+    return {
+        "user_id": user.get("user_id", ""),
+        "nickname": user.get("nickname", ""),
+        "avatar_url": user.get("avatar_url", ""),
+        "profile_updated_at": user.get("profile_updated_at", ""),
+        "plan": user.get("plan", "trial"),
+    }
 
 
 def public_conversation(item: dict[str, Any]) -> dict[str, Any]:
@@ -1568,8 +1749,8 @@ def admin_page_html() -> str:
         <p>查看运行状态，调整常用产品配置。密钥只显示配置状态，不回显明文。</p>
       </div>
       <div class="actions">
-        <input id="token" type="password" placeholder="管理员 token" autocomplete="current-password">
-        <button id="load" type="button">进入</button>
+        <input id="password" type="password" placeholder="后台密码" autocomplete="current-password">
+        <button id="load" type="button">登录</button>
       </div>
     </header>
     <section class="grid">
@@ -1586,8 +1767,8 @@ def admin_page_html() -> str:
             <label>类型
               <select name="type"><option value="credits">积分码</option><option value="time_pass">时间卡</option></select>
             </label>
-            <label>积分<input name="credits" type="number" min="0" value="10"></label>
-            <label>天数<input name="duration_days" type="number" min="0" value="7"></label>
+            <label id="redeemCreditsField">积分<input name="credits" type="number" min="0" value="10"></label>
+            <label id="redeemDurationField">天数<input name="duration_days" type="number" min="0" value="7"></label>
             <label>可用人数<input name="max_uses" type="number" min="0" value="1"></label>
             <label>生成数量<input name="count" type="number" min="1" max="1000" value="1"></label>
             <label>前缀<input name="prefix" placeholder="VIP"></label>
@@ -1711,25 +1892,37 @@ def admin_page_html() -> str:
     </section>
   </main>
   <script>
-    const tokenInput = document.querySelector("#token");
+    const passwordInput = document.querySelector("#password");
     const statusEl = document.querySelector("#status");
     const form = document.querySelector("#configForm");
     const redeemForm = document.querySelector("#redeemForm");
-    tokenInput.value = localStorage.getItem("baiou_admin_token") || "";
 
     function headers() {
-      return { "Content-Type": "application/json", "Authorization": "Bearer " + tokenInput.value.trim() };
+      return { "Content-Type": "application/json" };
     }
     async function api(path, options = {}) {
-      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const res = await fetch(path, { ...options, credentials: "same-origin", headers: { ...headers(), ...(options.headers || {}) } });
       const contentType = res.headers.get("content-type") || "";
       const data = contentType.includes("application/json") ? await res.json() : await res.text();
       if (!res.ok || data.ok === false) throw new Error((data.error && data.error.message) || "请求失败");
       return data;
     }
+    async function login() {
+      const password = passwordInput.value.trim();
+      if (!password) throw new Error("请输入后台密码");
+      await api("/api/v1/admin/login", { method: "POST", body: JSON.stringify({ password }) });
+      passwordInput.value = "";
+    }
     function setStatus(text) { statusEl.textContent = text; }
     function escapeHtml(value) {
       return String(value || "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+    function syncRedeemFields() {
+      const isTimePass = redeemForm.type.value === "time_pass";
+      document.querySelector("#redeemCreditsField").style.display = isTimePass ? "none" : "grid";
+      document.querySelector("#redeemDurationField").style.display = isTimePass ? "grid" : "none";
+      redeemForm.credits.disabled = isTimePass;
+      redeemForm.duration_days.disabled = !isTimePass;
     }
     function fillMetrics(stats) {
       const totals = stats.totals || {};
@@ -1748,17 +1941,16 @@ def admin_page_html() -> str:
       document.querySelector("#metrics").innerHTML = items.map(([k, v]) => `<div class="metric"><b>${v}</b><span>${k}</span></div>`).join("");
     }
     function fillSecrets(secrets) {
-      const labels = { dashscope_api_key: "DashScope Key", deepseek_api_key: "DeepSeek Key", wechat_appid: "微信 AppID", wechat_secret: "微信 AppSecret", admin_token: "后台 Token", web_access_code: "网页内测码" };
+      const labels = { dashscope_api_key: "DashScope Key", deepseek_api_key: "DeepSeek Key", wechat_appid: "微信 AppID", wechat_secret: "微信 AppSecret", admin_password: "后台密码", admin_token: "兼容 Token", web_access_code: "网页内测码" };
       document.querySelector("#secrets").innerHTML = Object.entries(labels).map(([key, label]) => {
         const ok = !!secrets[key];
         return `<div class="secret"><span>${label}</span><span class="tag ${ok ? "ok" : "warn"}">${ok ? "已配置" : "未配置"}</span></div>`;
       }).join("");
     }
     async function downloadFeedbackCsv() {
-      localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("导出中...");
       const res = await fetch("/api/v1/admin/feedback/export.zip", {
-        headers: { "Authorization": "Bearer " + tokenInput.value.trim() },
+        credentials: "same-origin",
       });
       if (!res.ok) {
         const contentType = res.headers.get("content-type") || "";
@@ -1815,7 +2007,7 @@ def admin_page_html() -> str:
     function fillUsers(rows) {
       document.querySelector("#users").innerHTML = (rows || []).map(row => `
         <tr data-user-id="${escapeHtml(row.user_id)}">
-          <td><strong>${escapeHtml(row.user_id)}</strong><br><span class="tag">${escapeHtml(row.nickname || "无昵称")}</span> ${row.has_openid ? '<span class="tag ok">openid</span>' : '<span class="tag">无 openid</span>'}<br><span class="tag">创建 ${escapeHtml(row.created_at)}</span></td>
+          <td><div style="display:flex;gap:8px;align-items:flex-start"><img src="${escapeHtml(row.avatar_url || '')}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;background:#eef1f5" onerror="this.style.display='none'"><div><strong>${escapeHtml(row.user_id)}</strong><br><span class="tag">${escapeHtml(row.nickname || "无昵称")}</span> ${row.has_openid ? '<span class="tag ok">openid</span>' : '<span class="tag">无 openid</span>'}<br><span class="tag">创建 ${escapeHtml(row.created_at)}</span></div></div></td>
           <td>${escapeHtml(row.last_ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.last_ip_hash || "")}</span><br><span class="tag">session ${escapeHtml(row.last_session_at || "-")}</span></td>
           <td>今日 ${row.today_usage || 0}<br>总计 ${row.total_usage || 0}<br><span class="tag">活跃 ${escapeHtml(row.last_activity_at || "-")}</span></td>
           <td>积分 ${row.credits_balance || 0}<br><span class="tag">权益至 ${escapeHtml(row.time_pass_expires_at || "-")}</span><br><input class="mini-input credits-delta-input" type="number" value="" placeholder="+/-"><input class="mini-input pass-input" value="${escapeHtml(row.time_pass_expires_at || "")}" placeholder="有效期"><br><label style="display:inline-flex;gap:6px;margin-top:6px"><input class="mini-check disabled-input" type="checkbox" ${row.disabled ? "checked" : ""}>禁用</label></td>
@@ -1881,7 +2073,6 @@ def admin_page_html() -> str:
       setStatus("用户积分已保存");
     }
     async function loadAll() {
-      localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("加载中...");
       const [cfg, stats, feedback, users, ipUsage, replyRuns, redeemCodes] = await Promise.all([
         api("/api/v1/admin/config"),
@@ -1933,10 +2124,11 @@ def admin_page_html() -> str:
     });
     redeemForm.addEventListener("submit", async event => {
       event.preventDefault();
+      const isTimePass = redeemForm.type.value === "time_pass";
       const payload = {
         type: redeemForm.type.value,
-        credits: redeemForm.credits.value,
-        duration_days: redeemForm.duration_days.value,
+        credits: isTimePass ? 0 : redeemForm.credits.value,
+        duration_days: isTimePass ? redeemForm.duration_days.value : 0,
         max_uses: redeemForm.max_uses.value,
         count: redeemForm.count.value,
         prefix: redeemForm.prefix.value,
@@ -1948,7 +2140,17 @@ def admin_page_html() -> str:
       await loadAll();
       setStatus("兑换码已生成");
     });
-    document.querySelector("#load").addEventListener("click", loadAll);
+    redeemForm.type.addEventListener("change", syncRedeemFields);
+    syncRedeemFields();
+    document.querySelector("#load").addEventListener("click", async () => {
+      try {
+        await login();
+        await loadAll();
+        setStatus("已登录");
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
     document.querySelector("#reload").addEventListener("click", loadAll);
   </script>
 </body>

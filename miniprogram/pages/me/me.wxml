@@ -1,6 +1,16 @@
 <view class="page">
   <view class="panel">
     <view class="section-title">账号</view>
+    <view class="profile-row">
+      <button class="avatar-button" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+        <image wx:if="{{profileAvatarUrl}}" class="avatar" src="{{profileAvatarUrl}}" mode="aspectFill"></image>
+        <view wx:else class="avatar placeholder">头像</view>
+      </button>
+      <view class="grow">
+        <input class="input" type="nickname" placeholder="填写昵称" value="{{profileNickname}}" bindinput="onNicknameInput" />
+        <button class="button small" loading="{{profileSaving}}" disabled="{{profileSaving}}" bindtap="saveProfile">保存资料</button>
+      </view>
+    </view>
     <view class="muted">用户：{{user.user_id || "未登录"}}</view>
     <view class="muted">当前积分：{{limits.credits_balance || 0}}</view>
     <view class="muted">权益状态：{{timePassText}}</view>

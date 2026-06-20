@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
+from werkzeug.security import generate_password_hash
+
 from baiou.product.api import app as api_app
 from baiou.product.storage import ProductStore
 
@@ -111,6 +113,42 @@ def test_wechat_code_login_creates_session_token(monkeypatch, tmp_path: Path) ->
     assert forged.status_code == 401
 
 
+def test_user_can_update_profile_after_login(monkeypatch, tmp_path: Path) -> None:
+    client, _captured = client_with_runtime(monkeypatch, tmp_path)
+    login = client.post("/api/v1/auth/login", json={"user_id": "test_user"}).get_json()
+    headers = {"Authorization": f"Bearer {login['token']}"}
+
+    saved = client.patch("/api/v1/me/profile", headers=headers, json={"nickname": "小白", "avatar_url": "/api/v1/avatars/test/avatar.jpg"})
+    me = client.get("/api/v1/me", headers=headers)
+
+    assert saved.status_code == 200
+    assert saved.get_json()["user"]["nickname"] == "小白"
+    assert saved.get_json()["user"]["avatar_url"] == "/api/v1/avatars/test/avatar.jpg"
+    assert me.get_json()["user"]["profile_updated_at"]
+
+
+def test_user_can_upload_avatar_and_admin_can_see_it(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    login = client.post("/api/v1/auth/login", json={"user_id": "test_user"}).get_json()
+    headers = {"Authorization": f"Bearer {login['token']}"}
+
+    uploaded = client.post(
+        "/api/v1/me/avatar",
+        headers=headers,
+        data={"avatar": (BytesIO(b"avatar-bytes"), "me.jpg")},
+        content_type="multipart/form-data",
+    )
+    avatar_url = uploaded.get_json()["avatar_url"]
+    avatar = client.get(avatar_url)
+    users = client.get("/api/v1/admin/users", headers=admin_headers()).get_json()["users"]
+
+    assert uploaded.status_code == 201
+    assert avatar.status_code == 200
+    assert avatar.data == b"avatar-bytes"
+    assert users[0]["avatar_url"] == avatar_url
+
+
 def test_login_requires_code_when_dev_login_is_disabled(monkeypatch, tmp_path: Path) -> None:
     client, _captured = client_with_runtime(monkeypatch, tmp_path, make_config(tmp_path, dev_login_enabled=False))
 
@@ -166,7 +204,7 @@ def test_sqlite_store_migrates_existing_product_db(tmp_path: Path) -> None:
             table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for table in ["users", "conversations", "reply_runs", "uploads"]
         }
-    assert {"openid", "nickname", "plan"} <= columns["users"]
+    assert {"openid", "nickname", "avatar_url", "profile_updated_at", "plan"} <= columns["users"]
     assert {"background", "status"} <= columns["conversations"]
     assert {"runtime_context", "image_understanding", "reference_segments_json", "runtime_run_id"} <= columns["reply_runs"]
     assert "consumed_at" in columns["uploads"]
@@ -496,16 +534,63 @@ def test_admin_stats_and_feedback_export_require_token(monkeypatch, tmp_path: Pa
     assert "reply 1" in export.get_data(as_text=True)
 
 
-def test_admin_page_exports_csv_with_authorization_header(monkeypatch, tmp_path: Path) -> None:
-    config = make_config(tmp_path, admin_token="admin-secret")
+def test_admin_password_login_sets_cookie_for_admin_api(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        admin_token="",
+        admin_password_hash=generate_password_hash("pm-password"),
+        admin_cookie_secure=False,
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    denied = client.get("/api/v1/admin/stats")
+    wrong = client.post("/api/v1/admin/login", json={"password": "wrong"})
+    login = client.post("/api/v1/admin/login", json={"password": "pm-password"})
+    stats = client.get("/api/v1/admin/stats")
+
+    assert denied.status_code == 401
+    assert wrong.status_code == 401
+    assert login.status_code == 200
+    assert "HttpOnly" in login.headers.get("Set-Cookie", "")
+    assert stats.status_code == 200
+
+
+def test_admin_password_login_is_rate_limited(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        admin_token="",
+        admin_password_hash=generate_password_hash("pm-password"),
+        admin_cookie_secure=False,
+        admin_login_max_attempts=2,
+        admin_login_window_seconds=600,
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    headers = {"X-Forwarded-For": "203.0.113.88"}
+
+    first = client.post("/api/v1/admin/login", headers=headers, json={"password": "wrong"})
+    second = client.post("/api/v1/admin/login", headers=headers, json={"password": "wrong"})
+    limited = client.post("/api/v1/admin/login", headers=headers, json={"password": "pm-password"})
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert limited.status_code == 429
+
+
+def test_admin_page_uses_password_login_and_cookie_fetch(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_password_hash=generate_password_hash("pm-password"))
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
 
     html = client.get("/admin").get_data(as_text=True)
 
     assert "?token=" not in html
+    assert "/api/v1/admin/login" in html
+    assert "redeemCreditsField" in html
+    assert "redeemDurationField" in html
+    assert "function syncRedeemFields()" in html
     assert 'fetch("/api/v1/admin/feedback/export.zip"' in html
     assert "/api/v1/admin/reply-runs?limit=20" in html
-    assert '"Authorization": "Bearer " + tokenInput.value.trim()' in html
+    assert "baiou_admin_token" not in html
+    assert "credentials: \"same-origin\"" in html
 
 
 def test_admin_feedback_review_zip_includes_csv_and_screenshots(monkeypatch, tmp_path: Path) -> None:

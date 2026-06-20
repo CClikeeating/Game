@@ -55,15 +55,19 @@ BAIOU_CONTACT_QQ=1179123330
 BAIOU_WECHAT_APPID=小程序AppID
 BAIOU_WECHAT_SECRET=小程序AppSecret
 BAIOU_TRUSTED_PROXY_IPS=127.0.0.1,::1
+BAIOU_ADMIN_PASSWORD_HASH=后台密码哈希
+BAIOU_ADMIN_SESSION_DAYS=7
+BAIOU_ADMIN_LOGIN_MAX_ATTEMPTS=5
+BAIOU_ADMIN_LOGIN_WINDOW_SECONDS=600
 BAIOU_MINIPROGRAM_DEV_LOGIN=false
 BAIOU_MINIPROGRAM_DEBUG=false
 ```
 
-Do not put the access code, admin token, model keys, or WeChat secret in frontend source or tracked config files. For a stronger setup, store SHA-256 hashes in `BAIOU_WEB_ACCESS_CODE_HASHES` instead of plaintext access codes.
+Do not put the access code, admin password/hash, model keys, or WeChat secret in frontend source or tracked config files. For a stronger setup, store SHA-256 hashes in `BAIOU_WEB_ACCESS_CODE_HASHES` instead of plaintext access codes.
 
 ## Admin operations
 
-`/admin` uses `Authorization: Bearer <BAIOU_ADMIN_TOKEN>`. Keep the token in the server environment or a secrets manager, not in tracked config.
+`/admin` uses password login. The server stores `BAIOU_ADMIN_PASSWORD_HASH`, then issues an HttpOnly admin cookie for `BAIOU_ADMIN_SESSION_DAYS` days, default 7. `BAIOU_ADMIN_TOKEN` can remain as a compatibility path for scripts, but the admin page no longer asks PM/operators to paste a token.
 
 The admin API can:
 
