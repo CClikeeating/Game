@@ -1,1 +1,41 @@
+.profile-row {
+  display: flex;
+  gap: 20rpx;
+  align-items: center;
+  margin-bottom: 18rpx;
+}
 
+.avatar-button {
+  width: 112rpx;
+  height: 112rpx;
+  padding: 0;
+  border-radius: 56rpx;
+  background: transparent;
+  overflow: hidden;
+}
+
+.avatar-button::after {
+  border: 0;
+}
+
+.avatar {
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 56rpx;
+}
+
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef3f1;
+  color: #587067;
+  font-size: 24rpx;
+}
+
+.small {
+  margin-top: 12rpx;
+  min-height: 64rpx;
+  line-height: 64rpx;
+  font-size: 26rpx;
+}

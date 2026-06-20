@@ -61,6 +61,8 @@ https://baioulove.xyz/api/v1/health
 BAIOU_WECHAT_APPID=小程序AppID
 BAIOU_WECHAT_SECRET=小程序AppSecret
 BAIOU_MINIPROGRAM_DEV_LOGIN=false
+BAIOU_ADMIN_PASSWORD_HASH=后台密码哈希
+BAIOU_ADMIN_SESSION_DAYS=7
 BAIOU_DAILY_REPLY_QUOTA=10
 BAIOU_WEB_SITE_DAILY_QUOTA=1000
 BAIOU_WEB_IP_DAILY_QUOTA=0
@@ -79,7 +81,7 @@ BAIOU_CONTACT_QQ=1179123330
 5. 确认后台数据使用边界：
    - 谁可以下载审核 ZIP。
    - 截图人工审核后如何保管、删除或脱敏。
-   - admin token 的保管人和轮换方式。
+   - 后台密码的保管人和轮换方式；服务器只保存密码 hash。
 
 ## 测试计划
 

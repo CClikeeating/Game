@@ -23,6 +23,8 @@ SCHEMA_MIGRATIONS: dict[str, dict[str, str]] = {
     "users": {
         "openid": "openid TEXT DEFAULT ''",
         "nickname": "nickname TEXT DEFAULT ''",
+        "avatar_url": "avatar_url TEXT NOT NULL DEFAULT ''",
+        "profile_updated_at": "profile_updated_at TEXT NOT NULL DEFAULT ''",
         "plan": "plan TEXT NOT NULL DEFAULT 'trial'",
         "credits_balance": "credits_balance INTEGER NOT NULL DEFAULT 0",
         "initial_credits_granted_at": "initial_credits_granted_at TEXT NOT NULL DEFAULT ''",
@@ -88,6 +90,8 @@ class ProductStore:
                     user_id TEXT PRIMARY KEY,
                     openid TEXT,
                     nickname TEXT,
+                    avatar_url TEXT NOT NULL DEFAULT '',
+                    profile_updated_at TEXT NOT NULL DEFAULT '',
                     plan TEXT NOT NULL DEFAULT 'trial',
                     credits_balance INTEGER NOT NULL DEFAULT 0,
                     initial_credits_granted_at TEXT NOT NULL DEFAULT '',
@@ -333,6 +337,22 @@ class ProductStore:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
+
+    def update_user_profile(self, user_id: str, nickname: str = "", avatar_url: str = "") -> dict[str, Any]:
+        self.ensure_user(user_id)
+        stamp = now_iso()
+        updates = ["profile_updated_at = ?", "updated_at = ?"]
+        params: list[Any] = [stamp, stamp]
+        if nickname.strip():
+            updates.append("nickname = ?")
+            params.append(nickname.strip()[:80])
+        if avatar_url.strip():
+            updates.append("avatar_url = ?")
+            params.append(avatar_url.strip()[:500])
+        params.append(user_id)
+        with self.connect() as conn:
+            conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?", params)
+        return self.get_user(user_id) or {}
 
     def create_session(self, user_id: str, ttl_days: int = 30, ip_hash: str = "", ip_display: str = "") -> str:
         token = secrets.token_urlsafe(32)
@@ -787,6 +807,8 @@ class ProductStore:
                 SELECT
                     u.user_id,
                     u.nickname,
+                    u.avatar_url,
+                    u.profile_updated_at,
                     CASE WHEN COALESCE(u.openid, '') = '' THEN 0 ELSE 1 END AS has_openid,
                     u.plan,
                     u.credits_balance,

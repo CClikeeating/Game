@@ -209,6 +209,10 @@
   box-shadow: 0 14rpx 38rpx rgba(29, 39, 53, 0.06);
 }
 
+.result-card {
+  margin-bottom: 170rpx;
+}
+
 .upload-panel {
   display: flex;
   align-items: center;
@@ -478,6 +482,7 @@
   left: 0;
   right: 0;
   bottom: calc(108rpx + env(safe-area-inset-bottom));
+  z-index: 12;
   padding: 10rpx 24rpx 8rpx;
   background: rgba(255, 255, 255, 0.94);
   border-top: 1rpx solid #e5eaf1;
