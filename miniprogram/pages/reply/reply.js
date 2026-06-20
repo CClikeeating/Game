@@ -65,6 +65,7 @@ Page({
     const me = await api.request("/api/v1/me")
     await this.loadConversations()
     const limits = me.limits || app.globalData.limits || {}
+    app.globalData.limits = limits
     this.setData({ limits, ...modeCosts(limits), serviceReady: true })
   },
 
@@ -251,6 +252,7 @@ Page({
         }
       })
       const limits = data.limits || this.data.limits
+      app.globalData.limits = limits
       this.setData({
         result: data.reply_run,
         limits,

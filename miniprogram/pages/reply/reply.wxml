@@ -4,7 +4,7 @@
     <view class="grow">
       <view class="chat-title">{{currentConversation.title || "默认窗口"}}</view>
     </view>
-    <view class="quota-pill">剩 {{serviceReady ? limits.daily_reply_remaining : "--" }} 次</view>
+    <view class="quota-pill">积分 {{serviceReady ? limits.credits_balance : "--"}}</view>
   </view>
 
   <view class="quick-guide">

@@ -24,6 +24,10 @@ SCHEMA_MIGRATIONS: dict[str, dict[str, str]] = {
         "openid": "openid TEXT DEFAULT ''",
         "nickname": "nickname TEXT DEFAULT ''",
         "plan": "plan TEXT NOT NULL DEFAULT 'trial'",
+        "credits_balance": "credits_balance INTEGER NOT NULL DEFAULT 0",
+        "initial_credits_granted_at": "initial_credits_granted_at TEXT NOT NULL DEFAULT ''",
+        "time_pass_expires_at": "time_pass_expires_at TEXT NOT NULL DEFAULT ''",
+        "disabled": "disabled INTEGER NOT NULL DEFAULT 0",
         "created_at": "created_at TEXT NOT NULL DEFAULT ''",
         "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
     },
@@ -40,15 +44,26 @@ SCHEMA_MIGRATIONS: dict[str, dict[str, str]] = {
         "image_understanding": "image_understanding TEXT NOT NULL DEFAULT ''",
         "reference_segments_json": "reference_segments_json TEXT NOT NULL DEFAULT '[]'",
         "runtime_run_id": "runtime_run_id TEXT NOT NULL DEFAULT ''",
+        "unit_cost": "unit_cost INTEGER NOT NULL DEFAULT 0",
+        "charge_source": "charge_source TEXT NOT NULL DEFAULT ''",
     },
     "uploads": {
         "consumed_at": "consumed_at TEXT NOT NULL DEFAULT ''",
     },
     "redeem_codes": {
+        "type": "type TEXT NOT NULL DEFAULT 'credits'",
+        "credits": "credits INTEGER NOT NULL DEFAULT 0",
+        "duration_days": "duration_days INTEGER NOT NULL DEFAULT 0",
         "used_count": "used_count INTEGER NOT NULL DEFAULT 0",
         "expires_at": "expires_at TEXT NOT NULL DEFAULT ''",
         "note": "note TEXT NOT NULL DEFAULT ''",
         "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
+    },
+    "redeem_redemptions": {
+        "type": "type TEXT NOT NULL DEFAULT 'credits'",
+        "credits": "credits INTEGER NOT NULL DEFAULT 0",
+        "duration_days": "duration_days INTEGER NOT NULL DEFAULT 0",
+        "granted_time_pass_expires_at": "granted_time_pass_expires_at TEXT NOT NULL DEFAULT ''",
     },
 }
 
@@ -74,6 +89,10 @@ class ProductStore:
                     openid TEXT,
                     nickname TEXT,
                     plan TEXT NOT NULL DEFAULT 'trial',
+                    credits_balance INTEGER NOT NULL DEFAULT 0,
+                    initial_credits_granted_at TEXT NOT NULL DEFAULT '',
+                    time_pass_expires_at TEXT NOT NULL DEFAULT '',
+                    disabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -103,6 +122,8 @@ class ProductStore:
                     image_understanding TEXT NOT NULL DEFAULT '',
                     reference_segments_json TEXT NOT NULL DEFAULT '[]',
                     runtime_run_id TEXT NOT NULL DEFAULT '',
+                    unit_cost INTEGER NOT NULL DEFAULT 0,
+                    charge_source TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(user_id),
@@ -150,6 +171,15 @@ class ProductStore:
                     units INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(scope, quota_key, usage_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS time_pass_usage (
+                    user_id TEXT NOT NULL,
+                    usage_date TEXT NOT NULL,
+                    units INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, usage_date),
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS user_quota_overrides (
@@ -203,6 +233,9 @@ class ProductStore:
                 CREATE TABLE IF NOT EXISTS redeem_codes (
                     code TEXT PRIMARY KEY,
                     daily_reply_quota INTEGER NOT NULL DEFAULT 0,
+                    type TEXT NOT NULL DEFAULT 'credits',
+                    credits INTEGER NOT NULL DEFAULT 0,
+                    duration_days INTEGER NOT NULL DEFAULT 0,
                     max_uses INTEGER NOT NULL DEFAULT 1,
                     used_count INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'active',
@@ -217,10 +250,27 @@ class ProductStore:
                     user_id TEXT NOT NULL,
                     code TEXT NOT NULL,
                     daily_reply_quota INTEGER NOT NULL DEFAULT 0,
+                    type TEXT NOT NULL DEFAULT 'credits',
+                    credits INTEGER NOT NULL DEFAULT 0,
+                    duration_days INTEGER NOT NULL DEFAULT 0,
+                    granted_time_pass_expires_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     UNIQUE(user_id, code),
                     FOREIGN KEY(user_id) REFERENCES users(user_id),
                     FOREIGN KEY(code) REFERENCES redeem_codes(code)
+                );
+
+                CREATE TABLE IF NOT EXISTS credit_ledger (
+                    ledger_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    delta INTEGER NOT NULL,
+                    balance_after INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    ref_type TEXT NOT NULL DEFAULT '',
+                    ref_id TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
                 );
                 """
             )
@@ -234,8 +284,23 @@ class ProductStore:
             for name, definition in columns.items():
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+        if "redeem_codes" in existing_tables(conn):
+            conn.execute(
+                """
+                UPDATE redeem_codes
+                SET credits = daily_reply_quota
+                WHERE credits = 0 AND COALESCE(daily_reply_quota, 0) > 0
+                """
+            )
 
-    def ensure_user(self, user_id: str, openid: str = "", nickname: str = "") -> dict[str, Any]:
+    def ensure_user(
+        self,
+        user_id: str,
+        openid: str = "",
+        nickname: str = "",
+        initial_credits: int = 0,
+        grant_initial_credits: bool = False,
+    ) -> dict[str, Any]:
         stamp = now_iso()
         with self.connect() as conn:
             conn.execute(
@@ -249,6 +314,18 @@ class ProductStore:
                 """,
                 (user_id, openid, nickname, stamp, stamp),
             )
+            row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            if row and grant_initial_credits and int(initial_credits) > 0 and not row["initial_credits_granted_at"]:
+                balance = int(row["credits_balance"] or 0) + int(initial_credits)
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET credits_balance = ?, initial_credits_granted_at = ?, updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (balance, stamp, stamp, user_id),
+                )
+                insert_credit_ledger(conn, user_id, int(initial_credits), balance, "initial_grant", "user", user_id, "")
         self.ensure_default_conversation(user_id)
         return self.get_user(user_id) or {}
 
@@ -521,6 +598,140 @@ class ProductStore:
             row = conn.execute("SELECT COALESCE(SUM(reply_count), 0) AS total FROM daily_usage WHERE user_id = ?", (user_id,)).fetchone()
         return int(row["total"] if row else 0)
 
+    def wallet_status(self, user_id: str, time_pass_daily_credit_cap: int = 0) -> dict[str, Any]:
+        user = self.get_user(user_id) or {}
+        expires_at = str(user.get("time_pass_expires_at", "") or "")
+        active = bool(expires_at and expires_at > now_iso())
+        used = self.time_pass_usage_today(user_id)
+        cap = max(0, int(time_pass_daily_credit_cap or 0))
+        return {
+            "credits_balance": int(user.get("credits_balance", 0) or 0),
+            "time_pass_active": active,
+            "time_pass_expires_at": expires_at,
+            "time_pass_daily_credit_cap": cap,
+            "time_pass_daily_used": used,
+            "time_pass_daily_remaining": max(0, cap - used) if active and cap else 0,
+            "disabled": bool(int(user.get("disabled", 0) or 0)),
+            "initial_credits_granted_at": user.get("initial_credits_granted_at", ""),
+        }
+
+    def reply_charge_preview(self, user_id: str, unit_cost: int, time_pass_daily_credit_cap: int) -> tuple[str, str]:
+        user = self.get_user(user_id) or {}
+        cost = max(0, int(unit_cost))
+        if int(user.get("disabled", 0) or 0):
+            return "", "user_disabled"
+        if cost <= 0:
+            return "credits", ""
+        cap = max(0, int(time_pass_daily_credit_cap or 0))
+        if str(user.get("time_pass_expires_at", "") or "") > now_iso() and cap and self.time_pass_usage_today(user_id) + cost <= cap:
+            return "time_pass", ""
+        if int(user.get("credits_balance", 0) or 0) >= cost:
+            return "credits", ""
+        return "", "credits_insufficient"
+
+    def time_pass_usage_today(self, user_id: str) -> int:
+        today = date.today().isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT units FROM time_pass_usage WHERE user_id = ? AND usage_date = ?",
+                (user_id, today),
+            ).fetchone()
+        return int(row["units"] if row else 0)
+
+    def charge_reply_success(self, user_id: str, run_id: str, unit_cost: int, time_pass_daily_credit_cap: int) -> tuple[str, str]:
+        cost = max(0, int(unit_cost))
+        stamp = now_iso()
+        today = date.today().isoformat()
+        cap = max(0, int(time_pass_daily_credit_cap or 0))
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            user = conn.execute(
+                "SELECT credits_balance, time_pass_expires_at, disabled FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if not user:
+                return "", "credits_insufficient"
+            if int(user["disabled"] or 0):
+                return "", "user_disabled"
+
+            source = "credits"
+            if cost <= 0:
+                source = "credits"
+            elif str(user["time_pass_expires_at"] or "") > stamp and cap:
+                pass_row = conn.execute(
+                    "SELECT units FROM time_pass_usage WHERE user_id = ? AND usage_date = ?",
+                    (user_id, today),
+                ).fetchone()
+                pass_used = int(pass_row["units"] if pass_row else 0)
+                if pass_used + cost <= cap:
+                    source = "time_pass"
+                    conn.execute(
+                        """
+                        INSERT INTO time_pass_usage(user_id, usage_date, units, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(user_id, usage_date) DO UPDATE SET
+                            units = time_pass_usage.units + excluded.units,
+                            updated_at = excluded.updated_at
+                        """,
+                        (user_id, today, cost, stamp),
+                    )
+
+            if source == "credits" and cost:
+                cur = conn.execute(
+                    """
+                    UPDATE users
+                    SET credits_balance = credits_balance - ?, updated_at = ?
+                    WHERE user_id = ? AND disabled = 0 AND credits_balance >= ?
+                    """,
+                    (cost, stamp, user_id, cost),
+                )
+                if cur.rowcount <= 0:
+                    return "", "credits_insufficient"
+                balance_row = conn.execute("SELECT credits_balance FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                balance = int(balance_row["credits_balance"] if balance_row else 0)
+                insert_credit_ledger(conn, user_id, -cost, balance, "reply_charge", "reply_run", run_id, "")
+            conn.execute(
+                """
+                UPDATE reply_runs SET unit_cost = ?, charge_source = ?, updated_at = ?
+                WHERE user_id = ? AND run_id = ?
+                """,
+                (cost, source, stamp, user_id, run_id),
+            )
+        return source, ""
+
+    def adjust_user_credits(self, user_id: str, delta: int, note: str = "", reason: str = "admin_adjust") -> dict[str, Any]:
+        self.ensure_user(user_id)
+        amount = int(delta)
+        stamp = now_iso()
+        with self.connect() as conn:
+            row = conn.execute("SELECT credits_balance FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            balance = max(0, int(row["credits_balance"] if row else 0) + amount)
+            actual_delta = balance - int(row["credits_balance"] if row else 0)
+            conn.execute(
+                "UPDATE users SET credits_balance = ?, updated_at = ? WHERE user_id = ?",
+                (balance, stamp, user_id),
+            )
+            insert_credit_ledger(conn, user_id, actual_delta, balance, reason, "admin", "", note)
+        return self.get_user(user_id) or {}
+
+    def set_user_wallet(self, user_id: str, credits_delta: int | None = None, time_pass_expires_at: str | None = None, disabled: bool | None = None, note: str = "") -> dict[str, Any]:
+        self.ensure_user(user_id)
+        user = self.adjust_user_credits(user_id, int(credits_delta), note) if credits_delta is not None else self.get_user(user_id) or {}
+        updates = []
+        params: list[Any] = []
+        if time_pass_expires_at is not None:
+            updates.append("time_pass_expires_at = ?")
+            params.append(str(time_pass_expires_at).strip())
+        if disabled is not None:
+            updates.append("disabled = ?")
+            params.append(1 if disabled else 0)
+        if updates:
+            updates.append("updated_at = ?")
+            params.extend([now_iso(), user_id])
+            with self.connect() as conn:
+                conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?", params)
+        return self.get_user(user_id) or user
+
     def increment_quota_units(self, scope: str, quota_key: str, units: int = 1) -> int:
         today = date.today().isoformat()
         stamp = now_iso()
@@ -559,11 +770,13 @@ class ProductStore:
                 """,
                 (user_id, quota, 1 if disabled else 0, stamp, stamp),
             )
+            conn.execute("UPDATE users SET disabled = ?, updated_at = ? WHERE user_id = ?", (1 if disabled else 0, stamp, user_id))
         return self.get_user_quota_override(user_id) or {}
 
     def clear_user_quota_override(self, user_id: str) -> bool:
         with self.connect() as conn:
             cur = conn.execute("DELETE FROM user_quota_overrides WHERE user_id = ?", (user_id,))
+            conn.execute("UPDATE users SET disabled = 0, updated_at = ? WHERE user_id = ?", (now_iso(), user_id))
         return cur.rowcount > 0
 
     def list_admin_users(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -576,12 +789,16 @@ class ProductStore:
                     u.nickname,
                     CASE WHEN COALESCE(u.openid, '') = '' THEN 0 ELSE 1 END AS has_openid,
                     u.plan,
+                    u.credits_balance,
+                    u.initial_credits_granted_at,
+                    u.time_pass_expires_at,
+                    u.disabled AS user_disabled,
                     u.created_at,
                     u.updated_at,
                     COALESCE(today_usage.reply_count, 0) AS today_usage,
                     COALESCE(total_usage.total_usage, 0) AS total_usage,
                     quota.daily_reply_quota AS quota_override,
-                    COALESCE(quota.disabled, 0) AS disabled,
+                    COALESCE(u.disabled, quota.disabled, 0) AS disabled,
                     login.ip_hash AS last_ip_hash,
                     login.ip_display AS last_ip_display,
                     login.created_at AS last_login_at,
@@ -769,7 +986,9 @@ class ProductStore:
     def upsert_redeem_code(
         self,
         code: str,
-        daily_reply_quota: int,
+        code_type: str = "credits",
+        credits: int = 0,
+        duration_days: int = 0,
         max_uses: int = 1,
         expires_at: str = "",
         status: str = "active",
@@ -778,82 +997,176 @@ class ProductStore:
         clean_code = normalize_code(code)
         if not clean_code:
             return {}
+        clean_type = normalize_redeem_type(code_type)
         stamp = now_iso()
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO redeem_codes(code, daily_reply_quota, max_uses, status, expires_at, note, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO redeem_codes(code, daily_reply_quota, type, credits, duration_days, max_uses, status, expires_at, note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(code) DO UPDATE SET
                     daily_reply_quota = excluded.daily_reply_quota,
+                    type = excluded.type,
+                    credits = excluded.credits,
+                    duration_days = excluded.duration_days,
                     max_uses = excluded.max_uses,
                     status = excluded.status,
                     expires_at = excluded.expires_at,
                     note = excluded.note,
                     updated_at = excluded.updated_at
                 """,
-                (clean_code, max(0, int(daily_reply_quota)), max(0, int(max_uses)), status, expires_at, note, stamp, stamp),
+                (
+                    clean_code,
+                    max(0, int(credits)),
+                    clean_type,
+                    max(0, int(credits)),
+                    max(0, int(duration_days)),
+                    max(0, int(max_uses)),
+                    status,
+                    expires_at,
+                    note,
+                    stamp,
+                    stamp,
+                ),
             )
             row = conn.execute("SELECT * FROM redeem_codes WHERE code = ?", (clean_code,)).fetchone()
         return dict(row) if row else {}
 
-    def redeem_code(self, user_id: str, code: str, default_daily_quota: int) -> tuple[dict[str, Any] | None, str]:
+    def generate_redeem_codes(
+        self,
+        code_type: str,
+        credits: int,
+        duration_days: int,
+        max_uses: int = 1,
+        count: int = 1,
+        prefix: str = "",
+        length: int = 8,
+        expires_at: str = "",
+        status: str = "active",
+        note: str = "",
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        target = max(1, int(count))
+        for _ in range(target):
+            for _attempt in range(20):
+                code = make_redeem_code(prefix, length)
+                if self.get_redeem_code(code):
+                    continue
+                item = self.upsert_redeem_code(code, code_type, credits, duration_days, max_uses, expires_at, status, note)
+                if item:
+                    items.append(item)
+                    break
+        return items
+
+    def get_redeem_code(self, code: str) -> dict[str, Any] | None:
+        clean_code = normalize_code(code)
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM redeem_codes WHERE code = ?", (clean_code,)).fetchone()
+        return dict(row) if row else None
+
+    def list_redeem_codes(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM redeem_codes
+                ORDER BY created_at DESC, code ASC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_redeem_redemptions(self, code: str, limit: int = 100) -> list[dict[str, Any]]:
+        clean_code = normalize_code(code)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM redeem_redemptions
+                WHERE code = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (clean_code, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def redeem_code(self, user_id: str, code: str) -> tuple[dict[str, Any] | None, str]:
         clean_code = normalize_code(code)
         if not clean_code:
             return None, "redeem_code_required"
         self.ensure_user(user_id)
         stamp = now_iso()
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             code_row = conn.execute("SELECT * FROM redeem_codes WHERE code = ?", (clean_code,)).fetchone()
             if not code_row:
                 return None, "redeem_code_invalid"
             item = dict(code_row)
-            if item.get("status") != "active":
-                return None, "redeem_code_inactive"
-            if item.get("expires_at") and str(item["expires_at"]) < stamp:
-                return None, "redeem_code_expired"
             existing = conn.execute(
                 "SELECT * FROM redeem_redemptions WHERE user_id = ? AND code = ?",
                 (user_id, clean_code),
             ).fetchone()
             if existing:
                 return dict(existing), "redeem_code_already_used"
+            if item.get("status") == "exhausted":
+                return None, "redeem_code_exhausted"
+            if item.get("status") != "active":
+                return None, "redeem_code_inactive"
+            if item.get("expires_at") and str(item["expires_at"]) < stamp:
+                return None, "redeem_code_expired"
             if int(item.get("max_uses", 0) or 0) > 0 and int(item.get("used_count", 0) or 0) >= int(item.get("max_uses", 0) or 0):
                 return None, "redeem_code_exhausted"
 
-            quota = max(0, int(item.get("daily_reply_quota", 0) or 0))
-            override = conn.execute("SELECT * FROM user_quota_overrides WHERE user_id = ?", (user_id,)).fetchone()
-            current_quota = int(default_daily_quota)
-            disabled = 0
-            if override:
-                disabled = int(override["disabled"] or 0)
-                if override["daily_reply_quota"] is not None:
-                    current_quota = int(override["daily_reply_quota"])
-            next_quota = max(current_quota, quota)
+            code_type = normalize_redeem_type(str(item.get("type") or "credits"))
+            credits = max(0, int(item.get("credits", item.get("daily_reply_quota", 0)) or 0))
+            duration_days = max(0, int(item.get("duration_days", 0) or 0))
+            if code_type == "credits" and credits <= 0:
+                return None, "redeem_code_invalid"
+            if code_type == "time_pass" and duration_days <= 0:
+                return None, "redeem_code_invalid"
             redemption_id = new_id("redeem")
+            granted_until = ""
+            if code_type == "credits":
+                user = conn.execute("SELECT credits_balance FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                balance = int(user["credits_balance"] if user else 0) + credits
+                conn.execute("UPDATE users SET credits_balance = ?, updated_at = ? WHERE user_id = ?", (balance, stamp, user_id))
+                insert_credit_ledger(conn, user_id, credits, balance, "redeem_code", "redeem_code", clean_code, "")
+            else:
+                current = conn.execute("SELECT time_pass_expires_at FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                current_expires = str(current["time_pass_expires_at"] if current else "")
+                base = parse_iso_datetime(current_expires) if current_expires > stamp else datetime.now()
+                granted_until = (base + timedelta(days=duration_days)).isoformat(timespec="seconds")
+                conn.execute("UPDATE users SET time_pass_expires_at = ?, updated_at = ? WHERE user_id = ?", (granted_until, stamp, user_id))
             conn.execute(
                 """
-                INSERT INTO redeem_redemptions(redemption_id, user_id, code, daily_reply_quota, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO redeem_redemptions(
+                    redemption_id, user_id, code, daily_reply_quota, type, credits, duration_days,
+                    granted_time_pass_expires_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (redemption_id, user_id, clean_code, quota, stamp),
+                (redemption_id, user_id, clean_code, credits, code_type, credits, duration_days, granted_until, stamp),
             )
             conn.execute(
-                "UPDATE redeem_codes SET used_count = used_count + 1, updated_at = ? WHERE code = ?",
+                """
+                UPDATE redeem_codes
+                SET used_count = used_count + 1,
+                    status = CASE
+                        WHEN max_uses > 0 AND used_count + 1 >= max_uses THEN 'exhausted'
+                        ELSE status
+                    END,
+                    updated_at = ?
+                WHERE code = ?
+                """,
                 (stamp, clean_code),
             )
-            conn.execute(
-                """
-                INSERT INTO user_quota_overrides(user_id, daily_reply_quota, disabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    daily_reply_quota = excluded.daily_reply_quota,
-                    disabled = excluded.disabled,
-                    updated_at = excluded.updated_at
-                """,
-                (user_id, next_quota, disabled, stamp, stamp),
-            )
-        return {"code": clean_code, "daily_reply_quota": quota, "effective_daily_reply_quota": next_quota}, ""
+        return {
+            "code": clean_code,
+            "type": code_type,
+            "credits": credits,
+            "duration_days": duration_days,
+            "time_pass_expires_at": granted_until,
+        }, ""
 
     def list_admin_reply_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -861,7 +1174,8 @@ class ProductStore:
                 """
                 SELECT
                     run_id, user_id, conversation_id, mode, status, question, image_count,
-                    answer_json, reference_segments_json, runtime_run_id, created_at, updated_at
+                    answer_json, reference_segments_json, runtime_run_id, unit_cost, charge_source,
+                    created_at, updated_at
                 FROM reply_runs
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT ?
@@ -945,8 +1259,51 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def existing_tables(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def insert_credit_ledger(
+    conn: sqlite3.Connection,
+    user_id: str,
+    delta: int,
+    balance_after: int,
+    reason: str,
+    ref_type: str = "",
+    ref_id: str = "",
+    note: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO credit_ledger(ledger_id, user_id, delta, balance_after, reason, ref_type, ref_id, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (new_id("ledger"), user_id, int(delta), int(balance_after), reason, ref_type, ref_id, note, now_iso()),
+    )
+
+
 def normalize_code(code: str) -> str:
     return "".join(str(code or "").strip().upper().split())
+
+
+def normalize_redeem_type(value: str) -> str:
+    return "time_pass" if str(value or "").strip().lower() == "time_pass" else "credits"
+
+
+def make_redeem_code(prefix: str = "", length: int = 8) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    size = max(6, min(24, int(length or 8)))
+    body = "".join(secrets.choice(alphabet) for _ in range(size))
+    clean_prefix = normalize_code(prefix)
+    return f"{clean_prefix}-{body}" if clean_prefix else body
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return datetime.now()
 
 
 def scalar(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -> int:
