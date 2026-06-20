@@ -20,6 +20,32 @@ MODE_BAILIAN_RAG_QUALITY = "bailian_rag_quality"
 MODE_BAILIAN_RAG_STRATEGY_FAST = "bailian_rag_strategy_fast"
 MODE_BAILIAN_RAG_STRATEGY_QUALITY = "bailian_rag_strategy_quality"
 
+STRATEGY_CHOICES = [
+    "轻承接",
+    "轻推进",
+    "轻撤退",
+    "暧昧试探",
+    "暧昧推进",
+    "关系框架升级",
+    "高张力推进",
+    "转移话题",
+    "风险提醒",
+]
+
+SCENE_TYPE_CHOICES = [
+    "提问破解",
+    "筛选标准",
+    "推开否定",
+    "主动邀约拉扯",
+    "关系节奏测试",
+    "关系框架升级",
+    "极短追问",
+    "事实纠偏",
+    "现实状态边界",
+    "暧昧进攻",
+    "其他",
+]
+
 DEFAULT_LABEL_ALIASES = {
     "聊天阶段": {
         "初识": "刚认识",
@@ -149,7 +175,10 @@ HIGH_FRAME_CORE_RULE = (
     "不用“快慢不重要”否定感受，要拆表面维度和背后担忧，用更高层标准重定义，且不要固定输出同一句；labels 不要写男生目标=降压；"
     "5) 明确边界只收住当前推进并换话题，不道歉自证、不交出整体框架；6) 有玩笑空间可暧昧进攻，但短、自然、有兜底；"
     "7) 补偿、奖励、撒娇索取类场景要给一点甜头或暧昧想象，再保留框架，不能只冷冷地设门槛；"
-    "8) 具体物件/食物/表情/地点/药品出现时，优先贴对象特征轻损或暧昧联想，不要泛泛回看表现、够不够格。"
+    "8) 具体物件/食物/表情/地点/药品出现时，优先贴对象特征轻损或暧昧联想，不要泛泛做资格筛选；"
+    "9) 当女生把推进权抛回来时，不要把回复写成“女生需要证明自己”，也不要把轻门槛落成“看你表现”一类单向筛选。"
+    "优先把她的问题转成更高层的暧昧框架：临时还是长期、表面便宜还是真正喜欢、占有感还是双向选择。"
+    "可以轻筛选，但要先给情绪价值和关系想象，不要变成审查、要挟或价值资格评判。"
 )
 
 HIGH_FRAME_FORBID_RULE = (
@@ -550,9 +579,12 @@ def build_strategy_label_prompt(input_text: str) -> str:
             HIGH_FRAME_FORBID_RULE,
             TEXT_STRUCTURED_INPUT_RULE,
             action_guard,
-            "策略枚举：轻承接、轻推进、轻撤退、暧昧试探、高张力推进、转移话题、风险提醒。",
+            f"策略枚举：{'、'.join(STRATEGY_CHOICES)}。",
+            "策略区分：暧昧推进用于已有调情、亲密升级、占有玩笑或轻推拉，目标是把气氛推热；"
+            "关系框架升级用于对方把推进权抛回、讨论合适/缘分/认真/长期/占多久等关系定义，目标是把问题转成双向关系想象。"
+            "高张力推进只作兼容旧类目，能拆到前两类时优先拆。",
             "高张力推进边界：只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用。",
-            "场景类型枚举：提问破解/筛选标准/推开否定/主动邀约拉扯/关系节奏测试/极短追问/事实纠偏/现实状态边界/暧昧进攻/其他。",
+            f"场景类型枚举：{'/'.join(SCENE_TYPE_CHOICES)}。",
             "判断要求：普通接话不要硬标测试；但一旦有推开、筛选、否定、主动命令、关系节奏质疑，要保持框架，不能进入顺从模式。",
             "rag_query 要求：给后续知识库检索一个中文短查询，只保留当前话语动作、场景类型和需要的表达手感；不要列多条，不要写数组，不要加顿号或逗号。",
             "输出结构：",
@@ -613,21 +645,33 @@ def build_bailian_rag_prompt(
         return "\n\n".join(
             [
                 "你是 Baiou 高框架推拉模式的回复生成器。只输出合法 JSON，不要 Markdown。",
+                "【任务与输出】",
+                "最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；优先 8-24 个汉字，最多一个逗号；不要解释策略，不要写多选项，不要长篇。",
+                "【方向：先决定关系动作】",
                 HIGH_FRAME_SCOPE_RULE,
                 HIGH_FRAME_CORE_RULE,
-                HIGH_FRAME_FORBID_RULE,
-                "生成要求：最终 reply 只能是一句中文短回复，像用户能直接发出去的微信消息；优先 8-24 个汉字，最多一个逗号；不要解释策略，不要写多选项，不要长篇。",
+                "策略门工作方式：上面的 strategy 是唯一决策点，不得反向改变策略；先按策略门确定方向，再写表达。",
+                "【表达：把动作写成人话】",
                 "高框架不是讲道理：不要把标准、边界、感觉同频写成教练式解释；能用半句拉扯解决，就不要写成论证。",
+                "策略适配：strategy 为“关系框架升级”时，主轴是共同想象和关系定义升级；轻筛选只能做尾巴，不能变成交换条件、索取回报或证明。",
                 "暧昧奖励：对方索要补偿、奖励、亲亲、陪伴或撒娇时，先给一点甜头/画面感，再轻轻设置条件，避免只有门槛没有情绪价值。",
                 "对象调侃：对方提到具体物件、食物、表情、地点、药品时，先抓对象特征做轻损、纠偏或暧昧联想；不要用空泛门槛替代现场感。",
-                "策略门工作方式：上面的 strategy 是唯一决策点，不得反向改变策略。",
+                "轻筛选：可以保留一点门槛和轻上位，但它要服务于暧昧张力和关系想象，像双向游戏，不像资格审查、价值评判、奖惩或逼迫；不要用值不值得、配不配、够不够格把女生写成被评价对象。",
+                "后续推进/关系升级引导：当女生承接“合适、缘分、认真、长期”等关系观时，先接住她的价值观，再用当前互动给共同证据，最后落到一个低成本、可互动的小亲密动作，比如称呼、约定、专属感或下次见面的小动作；不要逼迫。",
+                "关系框架表达边界：不要把长期、占有或承诺写成合同有效期、审批许可、单方发放资格；门槛可以俏皮，但落点应是共同想象和双向选择。",
                 "表达手感：松弛、有框架、有一点暧昧或拉扯；不强怼、不油腻、不羞辱、不装导师。",
+                "【边界：什么不能做】",
+                HIGH_FRAME_FORBID_RULE,
                 "边界：如果策略门或当前输入显示明确停止/不舒服/不要继续，只收住当前推进并轻轻转话题。",
+                "输出前自检：如果草稿把女生写成被考核、被交易或被审批对象，或出现看你表现、值不值得、给不给、续期、拿什么换这类语义，必须改写成共同想象、双向选择、长期感或专属感。",
+                "【输入规则】",
                 TEXT_STRUCTURED_INPUT_RULE,
                 action_guard,
                 "策略门决策结果：",
                 json.dumps(strategy_guidance, ensure_ascii=False, indent=2),
+                "【RAG 使用】",
                 "知识库使用：百炼 file_search 只找表达参考和人味；当前输入和策略门优先，不照搬案例原句、称呼、强度。",
+                "召回降权：如果片段把推进写成考核、交易、审批、价值资格判断，只学习其关系动作，不继承具体表达。",
                 "检索软约束：优先只使用策略门 rag_query 作为知识库查询意图；不要把同一意图拆成多条同义查询，也不要扩展成泛泛的高框架、推拉、聊天话术等宽泛查询。",
                 "当前输入：",
                 input_text,
@@ -773,10 +817,11 @@ def strategy_fast_guidance() -> dict[str, Any]:
     return {
         "mode": MODE_BAILIAN_RAG_STRATEGY_FAST,
         "decision_rule": "策略优先；RAG 只做表达参考。",
-        "strategies": ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
+        "strategies": STRATEGY_CHOICES,
         "relationship_pace_rule": RELATIONSHIP_PACE_RULE,
         "aggressive_strategy": {
             "name": "高张力推进",
+            "preferred_split": ["暧昧推进", "关系框架升级"],
             "boundary": "只在对方有明确承接、玩笑空间、暧昧语境或高投入时使用；低信息、冷淡、防御、拒绝时禁用。",
         },
     }
@@ -787,14 +832,8 @@ def normalize_strategy_guidance(parsed: dict[str, Any], input_text: str = "") ->
         return heuristic_strategy_guidance(input_text, heuristic_labels(input_text))
     labels = extract_labels(parsed)
     state = parsed.get("state", {}) if isinstance(parsed.get("state", {}), dict) else {}
-    scene_type = normalize_choice(
-        parsed.get("scene_type"),
-        ["提问破解", "筛选标准", "推开否定", "主动邀约拉扯", "关系节奏测试", "极短追问", "事实纠偏", "现实状态边界", "暧昧进攻", "其他"],
-    )
-    strategy = normalize_choice(
-        parsed.get("strategy"),
-        ["轻承接", "轻推进", "轻撤退", "暧昧试探", "高张力推进", "转移话题", "风险提醒"],
-    )
+    scene_type = normalize_choice(parsed.get("scene_type"), SCENE_TYPE_CHOICES)
+    strategy = normalize_choice(parsed.get("strategy"), STRATEGY_CHOICES)
     rag_query = normalize_strategy_rag_query(parsed.get("rag_query")) or fallback_strategy_rag_query(input_text, scene_type or "其他", strategy or "轻承接")
     output = {
         "state": {

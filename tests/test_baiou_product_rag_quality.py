@@ -205,6 +205,119 @@ def test_strategy_quality_prompt_uses_explicit_strategy_as_decision_point() -> N
     assert "优先只使用策略门 rag_query" in reply_prompt
     assert "不要把同一意图拆成多条同义查询" in reply_prompt
     assert "最终 reply 只能是一句中文短回复" in reply_prompt
+    for section in ["【任务与输出】", "【方向：先决定关系动作】", "【表达：把动作写成人话】", "【边界：什么不能做】", "【输入规则】", "【RAG 使用】"]:
+        assert section in reply_prompt
+        assert section not in strategy_prompt
+
+
+def test_strategy_quality_prompt_keeps_push_playful_without_pressure() -> None:
+    strategy_prompt = build_strategy_label_prompt("用户问题：\n我该怎么回")
+    reply_prompt = build_bailian_rag_prompt(
+        "用户问题：\n我该怎么回",
+        strategy_guidance={
+            "strategy": "暧昧试探",
+            "rag_query": "暧昧拉扯 短回复",
+            "risk_level": "低",
+            "style_hint": "暧昧但不油",
+        },
+    )
+    daily_prompt = build_bailian_rag_prompt("用户问题：\n我该怎么回")
+
+    for prompt in [strategy_prompt, reply_prompt]:
+        assert "当女生把推进权抛回来时" in prompt
+        assert "不要把回复写成“女生需要证明自己”" in prompt
+        assert "不要把轻门槛落成“看你表现”一类单向筛选" in prompt
+        assert "临时还是长期、表面便宜还是真正喜欢、占有感还是双向选择" in prompt
+        assert "要先给情绪价值和关系想象" in prompt
+        assert "不要变成审查、要挟或价值资格评判" in prompt
+        assert "表现好就续期" not in prompt
+
+    assert "当女生把推进权抛回来时" not in daily_prompt
+
+
+def test_strategy_quality_reply_prompt_guides_relationship_value_followup() -> None:
+    reply_prompt = build_bailian_rag_prompt(
+        "用户问题：\n我该怎么回",
+        strategy_guidance={
+            "strategy": "暧昧试探",
+            "rag_query": "关系观承接 短回复",
+            "risk_level": "低",
+            "style_hint": "暧昧但不油",
+        },
+    )
+    daily_prompt = build_bailian_rag_prompt("用户问题：\n我该怎么回")
+
+    assert "后续推进" in reply_prompt
+    assert "合适、缘分、认真、长期" in reply_prompt
+    assert "先接住她的价值观" in reply_prompt
+    assert "当前互动给共同证据" in reply_prompt
+    assert "低成本、可互动的小亲密动作" in reply_prompt
+    assert "称呼、约定、专属感或下次见面的小动作" in reply_prompt
+    assert "不要逼迫" in reply_prompt
+    assert "后续推进" not in daily_prompt
+
+
+def test_strategy_gate_splits_high_tension_into_push_and_relationship_frame() -> None:
+    strategy_prompt = build_strategy_label_prompt("女生/对方最后一句：那就要看你想让我占多久了")
+
+    assert "暧昧推进" in strategy_prompt
+    assert "关系框架升级" in strategy_prompt
+    assert "能拆到前两类时优先拆" in strategy_prompt
+    assert "对方把推进权抛回" in strategy_prompt
+    assert "双向关系想象" in strategy_prompt
+
+
+def test_strategy_guidance_preserves_relationship_frame_upgrade() -> None:
+    guidance = normalize_strategy_guidance(
+        {
+            "scene_type": "关系框架升级",
+            "strategy": "关系框架升级",
+            "rag_query": "关系框架升级 长期想象 短回复",
+            "risk_level": "低",
+            "style_hint": "暧昧但不油",
+        },
+        "女生/对方最后一句：那就要看你想让我占多久了",
+    )
+
+    assert guidance["scene_type"] == "关系框架升级"
+    assert guidance["strategy"] == "关系框架升级"
+    assert guidance["rag_query"] == "关系框架升级 长期想象 短回复"
+
+
+def test_strategy_quality_reply_prompt_keeps_light_screening_and_relationship_upgrade_guidance() -> None:
+    reply_prompt = build_bailian_rag_prompt(
+        "女生/对方最后一句：如果合适的话，为什么不呢",
+        strategy_guidance={
+            "scene_type": "关系框架升级",
+            "strategy": "关系框架升级",
+            "rag_query": "关系框架升级 低成本亲密动作",
+            "risk_level": "低",
+            "style_hint": "暧昧但不油",
+        },
+    )
+    daily_prompt = build_bailian_rag_prompt("女生/对方最后一句：如果合适的话，为什么不呢")
+
+    assert "轻筛选" in reply_prompt
+    assert "strategy 为“关系框架升级”" in reply_prompt
+    assert "主轴是共同想象和关系定义升级" in reply_prompt
+    assert "交换条件、索取回报或证明" in reply_prompt
+    assert "像双向游戏" in reply_prompt
+    assert "价值评判" in reply_prompt
+    assert "值不值得、配不配、够不够格" in reply_prompt
+    assert "被评价对象" in reply_prompt
+    assert "关系升级引导" in reply_prompt
+    assert "合同有效期" in reply_prompt
+    assert "审批许可" in reply_prompt
+    assert "单方发放资格" in reply_prompt
+    assert "共同想象和双向选择" in reply_prompt
+    assert "输出前自检" in reply_prompt
+    assert "被考核、被交易或被审批对象" in reply_prompt
+    assert "看你表现、值不值得、给不给、续期、拿什么换" in reply_prompt
+    assert "召回降权" in reply_prompt
+    assert "不继承具体表达" in reply_prompt
+    assert "称呼、约定、专属感或下次见面的小动作" in reply_prompt
+    assert "轻筛选" not in daily_prompt
+    assert "关系升级引导" not in daily_prompt
 
 
 def test_strategy_guidance_preserves_single_rag_query_soft_constraint() -> None:
