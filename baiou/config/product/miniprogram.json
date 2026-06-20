@@ -6,6 +6,11 @@
     "max_conversations_per_user": 5,
     "history_turns_for_reply": 6,
     "daily_reply_quota": 10,
+    "initial_credits": 10,
+    "grant_initial_credits_to_existing_users": true,
+    "grant_initial_credits_to_non_wechat_users": false,
+    "time_pass_daily_credit_cap": 20,
+    "redeem_code_length": 8,
     "web_ip_daily_quota": 0,
     "web_site_daily_quota": 1000,
     "mode_unit_costs": {

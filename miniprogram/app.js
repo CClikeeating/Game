@@ -16,8 +16,12 @@ App({
     limits: {
       max_conversations_per_user: 5,
       history_turns_for_reply: 6,
-      daily_reply_quota: 10,
-      daily_reply_remaining: 10,
+      credits_balance: 10,
+      time_pass_active: false,
+      time_pass_expires_at: "",
+      time_pass_daily_credit_cap: 20,
+      time_pass_daily_used: 0,
+      time_pass_daily_remaining: 0,
       mode_unit_costs: {
         bailian_rag_fast: 1,
         bailian_rag_strategy_quality: 2

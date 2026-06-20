@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 from csv import DictWriter
+from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_conversations_per_user": 5,
         "history_turns_for_reply": 6,
         "daily_reply_quota": 10,
+        "initial_credits": 10,
+        "grant_initial_credits_to_existing_users": True,
+        "grant_initial_credits_to_non_wechat_users": False,
+        "time_pass_daily_credit_cap": 20,
+        "redeem_code_length": 8,
         "max_images_per_reply": 3,
         "min_images_per_reply": 1,
         "max_image_mb": 8,
@@ -103,10 +109,10 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             if not openid:
                 return fail("wechat_openid_missing", "微信登录失败，请稍后重试。", 401)
             user_id = wechat_user_id(openid)
-            user = store.ensure_user(user_id, openid, str(payload.get("nickname", "")))
+            user = ensure_product_user(store, config, user_id, openid, str(payload.get("nickname", "")))
         elif config["dev_login_enabled"] and not config.get("web_access_required"):
             user_id = requested_user_id(config, payload)
-            user = store.ensure_user(user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
+            user = ensure_product_user(store, config, user_id, str(payload.get("openid", "")), str(payload.get("nickname", "")))
         else:
             return fail("login_code_required", "请先完成微信登录。", 401)
         ip_info = client_ip_info(config)
@@ -122,7 +128,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if not access_code_allowed(config, access_code):
             return fail("web_access_denied", "内测访问码不正确。", 401)
         user_id = "web_" + uuid.uuid4().hex[:24]
-        user = store.ensure_user(user_id, "", "网页内测用户")
+        user = ensure_product_user(store, config, user_id, "", "网页内测用户")
         ip_info = client_ip_info(config)
         token = store.create_session(user["user_id"], int(config.get("session_days", 30)), ip_info["hash"], ip_info["display"])
         return ok({"token": token, "user": public_user(user), "limits": usage_payload(store, config, user["user_id"])})
@@ -132,7 +138,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
-        user = store.ensure_user(user_id)
+        user = ensure_product_user(store, config, user_id)
         return ok({"user": public_user(user), "limits": usage_payload(store, config, user_id)})
 
     @app.get("/api/v1/conversations")
@@ -140,7 +146,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
-        store.ensure_user(user_id)
+        ensure_product_user(store, config, user_id)
         return ok({"conversations": [public_conversation(item) for item in store.list_conversations(user_id)]})
 
     @app.post("/api/v1/conversations")
@@ -148,7 +154,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
-        store.ensure_user(user_id)
+        ensure_product_user(store, config, user_id)
         if store.active_conversation_count(user_id) >= int(config["max_conversations_per_user"]):
             return fail("conversation_limit_reached", f"最多可创建 {config['max_conversations_per_user']} 个聊天窗口。", 429)
         payload = request.get_json(silent=True) or {}
@@ -186,7 +192,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
-        store.ensure_user(user_id)
+        ensure_product_user(store, config, user_id)
         form = request.form if request.form else request.get_json(silent=True) or {}
         conversation_id = str(form.get("conversation_id", "")).strip()
         conversation = store.get_conversation(user_id, conversation_id)
@@ -200,9 +206,9 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         mode = MODE_BAILIAN_RAG_FAST if input_type == "text_only" else normalize_api_mode(str(form.get("mode", "") or config["default_mode"]), config)
         unit_cost = mode_unit_cost(config, mode)
         if not dry_run:
-            quota_error = reply_quota_error(store, config, user_id, unit_cost)
-            if quota_error:
-                return quota_error
+            access_error = reply_access_error(store, config, user_id, unit_cost)
+            if access_error:
+                return access_error
         files = request.files.getlist("images") if request.files else []
         validation_error = validate_images(files, config)
         if validation_error:
@@ -248,7 +254,12 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
             result["input_type"] = input_type
             saved = store.update_reply_run(user_id, run_record["run_id"], result) or run_record
             store.mark_uploads_consumed(user_id, upload_ids)
-            if not dry_run:
+            if not dry_run and should_charge_reply(saved):
+                charge_source, charge_error = store.charge_reply_success(user_id, run_record["run_id"], unit_cost, int(config.get("time_pass_daily_credit_cap", 0)))
+                if charge_error:
+                    return fail(charge_error, credit_error_message(charge_error), 429)
+                saved["unit_cost"] = unit_cost
+                saved["charge_source"] = charge_source
                 store.increment_usage(user_id, unit_cost)
                 increment_reply_quota_units(store, config, unit_cost)
         except Exception as exc:  # noqa: BLE001
@@ -260,7 +271,7 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
-        store.ensure_user(user_id)
+        ensure_product_user(store, config, user_id)
         files = request.files.getlist("images") or request.files.getlist("file")
         validation_error = validate_images(files, {**config, "max_images_per_reply": 1})
         if validation_error:
@@ -330,13 +341,27 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         store.clear_user_quota_override(user_id)
         return ok({"quota": {"user_id": user_id, "daily_reply_quota": None, "disabled": False, "effective_daily_reply_quota": int(config.get("daily_reply_quota", 10))}})
 
+    @app.patch("/api/v1/admin/users/<user_id>/wallet")
+    def admin_user_wallet_save(user_id: str):
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        credits_delta = payload.get("credits_delta")
+        delta = None if credits_delta is None or str(credits_delta).strip() == "" else bounded_int(credits_delta, 0, -1000000, 1000000)
+        expires_at = str(payload.get("time_pass_expires_at", "")).strip() if "time_pass_expires_at" in payload else None
+        disabled = parse_bool(payload.get("disabled"), False) if "disabled" in payload else None
+        user = store.set_user_wallet(user_id, delta, expires_at, disabled, str(payload.get("note", "")).strip())
+        row = {**user, "today_usage": store.usage_today(user_id), "total_usage": store.total_usage(user_id)}
+        return ok({"user": public_admin_user(row, config)})
+
     @app.post("/api/v1/redeem-codes/redeem")
     def redeem_code_apply():
         user_id = current_user_id(config, store)
         if not user_id:
             return fail("auth_required", "请先登录。", 401)
         payload = request.get_json(silent=True) or {}
-        redemption, error = store.redeem_code(user_id, str(payload.get("code", "")), int(config.get("daily_reply_quota", 10)))
+        redemption, error = store.redeem_code(user_id, str(payload.get("code", "")))
         if error:
             status = {
                 "redeem_code_already_used": 409,
@@ -352,9 +377,17 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if auth_error:
             return auth_error
         payload = request.get_json(silent=True) or {}
+        code_type = str(payload.get("type", "credits"))
+        credits = bounded_int(payload.get("credits") or payload.get("daily_reply_quota"), int(config.get("initial_credits", 10)), 0, 100000)
+        duration_days = bounded_int(payload.get("duration_days"), 0, 0, 3650)
+        validation_error = redeem_payload_error(code_type, credits, duration_days)
+        if validation_error:
+            return validation_error
         item = store.upsert_redeem_code(
             str(payload.get("code", "")),
-            bounded_int(payload.get("daily_reply_quota"), int(config.get("daily_reply_quota", 10)), 1, 100000),
+            code_type,
+            credits,
+            duration_days,
             bounded_int(payload.get("max_uses"), 1, 0, 1000000),
             str(payload.get("expires_at", "")).strip(),
             str(payload.get("status", "active") or "active").strip(),
@@ -363,6 +396,48 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if not item:
             return fail("redeem_code_required", "请输入兑换码。", 400)
         return ok({"redeem_code": public_redeem_code(item)})
+
+    @app.post("/api/v1/admin/redeem-codes/generate")
+    def admin_redeem_codes_generate():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        code_type = str(payload.get("type", "credits"))
+        credits = bounded_int(payload.get("credits"), 0, 0, 100000)
+        duration_days = bounded_int(payload.get("duration_days"), 0, 0, 3650)
+        validation_error = redeem_payload_error(code_type, credits, duration_days)
+        if validation_error:
+            return validation_error
+        items = store.generate_redeem_codes(
+            code_type,
+            credits,
+            duration_days,
+            bounded_int(payload.get("max_uses"), 1, 0, 1000000),
+            bounded_int(payload.get("count"), 1, 1, 1000),
+            str(payload.get("prefix", "")).strip(),
+            bounded_int(payload.get("length"), int(config.get("redeem_code_length", 8)), 6, 24),
+            str(payload.get("expires_at", "")).strip(),
+            str(payload.get("status", "active") or "active").strip(),
+            str(payload.get("note", "")).strip(),
+        )
+        return ok({"redeem_codes": [public_redeem_code(item) for item in items]})
+
+    @app.get("/api/v1/admin/redeem-codes")
+    def admin_redeem_codes_index():
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 100, 1, 1000)
+        return ok({"redeem_codes": [public_redeem_code(item) for item in store.list_redeem_codes(limit)]})
+
+    @app.get("/api/v1/admin/redeem-codes/<code>/redemptions")
+    def admin_redeem_code_redemptions(code: str):
+        auth_error = require_admin(config)
+        if auth_error:
+            return auth_error
+        limit = bounded_int(request.args.get("limit"), 100, 1, 1000)
+        return ok({"redemptions": [public_redemption(item) for item in store.list_redeem_redemptions(code, limit)]})
 
     @app.get("/api/v1/admin/ip-usage")
     def admin_ip_usage():
@@ -517,6 +592,17 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "max_conversations_per_user": int(limits.get("max_conversations_per_user", 5)),
         "history_turns_for_reply": int(limits.get("history_turns_for_reply", 6)),
         "daily_reply_quota": int(os.environ.get("BAIOU_DAILY_REPLY_QUOTA") or limits.get("daily_reply_quota", 10)),
+        "initial_credits": int(os.environ.get("BAIOU_INITIAL_CREDITS") or limits.get("initial_credits", 10)),
+        "grant_initial_credits_to_existing_users": parse_bool(
+            os.environ.get("BAIOU_GRANT_INITIAL_CREDITS_TO_EXISTING_USERS"),
+            bool(limits.get("grant_initial_credits_to_existing_users", True)),
+        ),
+        "grant_initial_credits_to_non_wechat_users": parse_bool(
+            os.environ.get("BAIOU_GRANT_INITIAL_CREDITS_TO_NON_WECHAT_USERS"),
+            bool(limits.get("grant_initial_credits_to_non_wechat_users", False)),
+        ),
+        "time_pass_daily_credit_cap": int(os.environ.get("BAIOU_TIME_PASS_DAILY_CREDIT_CAP") or limits.get("time_pass_daily_credit_cap", 20)),
+        "redeem_code_length": int(os.environ.get("BAIOU_REDEEM_CODE_LENGTH") or limits.get("redeem_code_length", 8)),
         "max_images_per_reply": int(limits.get("max_images_per_reply", 3)),
         "min_images_per_reply": int(limits.get("min_images_per_reply", 1)),
         "max_image_mb": max_image_mb,
@@ -565,6 +651,9 @@ def sanitize_api_config(config: dict[str, Any]) -> dict[str, Any]:
     output = dict(config)
     output["default_mode"] = normalize_user_reply_mode(output.get("default_mode", MODE_BAILIAN_RAG_FAST))
     output["modes"] = user_reply_modes(output.get("modes", {}))
+    output["initial_credits"] = max(0, int(output.get("initial_credits", 10)))
+    output["time_pass_daily_credit_cap"] = max(0, int(output.get("time_pass_daily_credit_cap", 20)))
+    output["redeem_code_length"] = bounded_int(output.get("redeem_code_length"), 8, 6, 24)
     output["mode_unit_costs"] = {
         mode: mode_unit_cost(output, mode) for mode in [MODE_BAILIAN_RAG_FAST, MODE_BAILIAN_RAG_STRATEGY_QUALITY]
     }
@@ -589,6 +678,17 @@ def requested_user_id(config: dict[str, Any], payload: dict[str, Any]) -> str:
     if user_id:
         return user_id
     return str(config.get("default_user_id", "dev_user"))
+
+
+def ensure_product_user(store: ProductStore, config: dict[str, Any], user_id: str, openid: str = "", nickname: str = "") -> dict[str, Any]:
+    can_grant_initial = bool(openid) or str(user_id).startswith("wx_") or bool(config.get("grant_initial_credits_to_non_wechat_users", False))
+    return store.ensure_user(
+        user_id,
+        openid,
+        nickname,
+        int(config.get("initial_credits", 0)),
+        bool(config.get("grant_initial_credits_to_existing_users", True)) and can_grant_initial,
+    )
 
 
 def current_user_id(config: dict[str, Any], store: ProductStore) -> str:
@@ -704,6 +804,9 @@ def public_admin_config(config: dict[str, Any]) -> dict[str, Any]:
         },
         "limits": {
             "daily_reply_quota": config.get("daily_reply_quota", 10),
+            "initial_credits": config.get("initial_credits", 10),
+            "time_pass_daily_credit_cap": config.get("time_pass_daily_credit_cap", 20),
+            "redeem_code_length": config.get("redeem_code_length", 8),
             "web_ip_daily_quota": config.get("web_ip_daily_quota", 20),
             "web_site_daily_quota": config.get("web_site_daily_quota", 1000),
             "mode_unit_costs": config.get("mode_unit_costs", {}),
@@ -759,6 +862,10 @@ def public_admin_user(item: dict[str, Any], config: dict[str, Any]) -> dict[str,
         "nickname": item.get("nickname", ""),
         "has_openid": bool(item.get("has_openid")),
         "plan": item.get("plan", "trial"),
+        "credits_balance": int(item.get("credits_balance", 0) or 0),
+        "initial_credits_granted_at": item.get("initial_credits_granted_at", ""),
+        "time_pass_expires_at": item.get("time_pass_expires_at", ""),
+        "time_pass_active": bool(item.get("time_pass_expires_at") and str(item.get("time_pass_expires_at")) > datetime.now().isoformat(timespec="seconds")),
         "created_at": item.get("created_at", ""),
         "updated_at": item.get("updated_at", ""),
         "last_activity_at": item.get("last_activity_at") or item.get("updated_at", ""),
@@ -822,6 +929,9 @@ def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) 
         },
         "limits": {
             "daily_reply_quota": bounded_int(limits.get("daily_reply_quota"), int(config.get("daily_reply_quota", 10)), 1, 10000),
+            "initial_credits": bounded_int(limits.get("initial_credits"), int(config.get("initial_credits", 10)), 0, 100000),
+            "time_pass_daily_credit_cap": bounded_int(limits.get("time_pass_daily_credit_cap"), int(config.get("time_pass_daily_credit_cap", 20)), 0, 100000),
+            "redeem_code_length": bounded_int(limits.get("redeem_code_length"), int(config.get("redeem_code_length", 8)), 6, 24),
             "web_ip_daily_quota": bounded_int(limits.get("web_ip_daily_quota"), int(config.get("web_ip_daily_quota", 20)), 0, 10000),
             "web_site_daily_quota": bounded_int(limits.get("web_site_daily_quota"), int(config.get("web_site_daily_quota", 1000)), 0, 100000),
             "mode_unit_costs": {
@@ -869,6 +979,9 @@ def apply_admin_config(config: dict[str, Any], cleaned: dict[str, Any]) -> None:
     config["rag_max_num_results"] = bounded_int(rag.get("max_num_results"), int(config.get("rag_max_num_results", 3)), 1, 10)
     for key in [
         "daily_reply_quota",
+        "initial_credits",
+        "time_pass_daily_credit_cap",
+        "redeem_code_length",
         "max_conversations_per_user",
         "history_turns_for_reply",
         "max_images_per_reply",
@@ -1018,16 +1131,18 @@ def unique_path(path: Path) -> Path:
 
 def usage_payload(store: ProductStore, config: dict[str, Any], user_id: str) -> dict[str, Any]:
     used = store.usage_today(user_id)
-    quota = effective_daily_reply_quota(store, config, user_id)
+    wallet = store.wallet_status(user_id, int(config.get("time_pass_daily_credit_cap", 0)))
+    quota = max(int(config.get("initial_credits", 0)), int(wallet.get("credits_balance", 0)))
     ip_quota = int(config.get("web_ip_daily_quota", 0))
     site_quota = int(config.get("web_site_daily_quota", 0))
     ip_used = store.quota_units_today("ip", client_ip_key(config)) if ip_quota else 0
     site_used = store.quota_units_today("site", "global") if site_quota else 0
     return {
         **public_limits(config),
+        **wallet,
         "daily_reply_quota": quota,
         "daily_reply_used": used,
-        "daily_reply_remaining": max(0, quota - used),
+        "daily_reply_remaining": int(wallet.get("credits_balance", 0)),
         "web_ip_daily_used": ip_used,
         "web_ip_daily_remaining": max(0, ip_quota - ip_used) if ip_quota else None,
         "web_site_daily_used": site_used,
@@ -1040,6 +1155,8 @@ def public_limits(config: dict[str, Any]) -> dict[str, Any]:
         "max_conversations_per_user": config["max_conversations_per_user"],
         "history_turns_for_reply": config["history_turns_for_reply"],
         "daily_reply_quota": config["daily_reply_quota"],
+        "initial_credits": config.get("initial_credits", 10),
+        "time_pass_daily_credit_cap": config.get("time_pass_daily_credit_cap", 20),
         "web_ip_daily_quota": config.get("web_ip_daily_quota", 0),
         "web_site_daily_quota": config.get("web_site_daily_quota", 0),
         "mode_unit_costs": config.get("mode_unit_costs", {}),
@@ -1054,6 +1171,10 @@ def mode_unit_cost(config: dict[str, Any], mode: str) -> int:
     return max(1, int(costs.get(mode, 1)))
 
 
+def should_charge_reply(item: dict[str, Any]) -> bool:
+    return str(item.get("status", "")).strip() == "model_success"
+
+
 def effective_daily_reply_quota(store: ProductStore, config: dict[str, Any], user_id: str) -> int:
     override = store.get_user_quota_override(user_id)
     if override:
@@ -1062,6 +1183,30 @@ def effective_daily_reply_quota(store: ProductStore, config: dict[str, Any], use
         if override.get("daily_reply_quota") is not None:
             return max(0, int(override.get("daily_reply_quota", 0)))
     return max(0, int(config.get("daily_reply_quota", 0)))
+
+
+def reply_access_error(store: ProductStore, config: dict[str, Any], user_id: str, unit_cost: int):
+    _source, credit_error = store.reply_charge_preview(user_id, unit_cost, int(config.get("time_pass_daily_credit_cap", 0)))
+    if credit_error:
+        return fail(credit_error, credit_error_message(credit_error), 429, {"remaining_credits": store.wallet_status(user_id).get("credits_balance", 0)})
+    ip_quota = int(config.get("web_ip_daily_quota", 0))
+    if ip_quota:
+        ip_used = store.quota_units_today("ip", client_ip_key(config))
+        if ip_used + unit_cost > ip_quota:
+            return fail("ip_daily_quota_exhausted", "当前网络今日额度已用完。", 429, {"remaining_quota": max(0, ip_quota - ip_used)})
+    site_quota = int(config.get("web_site_daily_quota", 0))
+    if site_quota:
+        site_used = store.quota_units_today("site", "global")
+        if site_used + unit_cost > site_quota:
+            return fail("site_daily_quota_exhausted", "今日全站额度已用完。", 429, {"remaining_quota": max(0, site_quota - site_used)})
+    return None
+
+
+def credit_error_message(code: str) -> str:
+    return {
+        "credits_insufficient": "积分不足。",
+        "user_disabled": "账号暂不可用。",
+    }.get(code, "暂不可用，请稍后再试。")
 
 
 def reply_quota_error(store: ProductStore, config: dict[str, Any], user_id: str, unit_cost: int):
@@ -1113,6 +1258,8 @@ def public_reply_run(item: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         "display_mode": config["modes"].get(item.get("mode", ""), item.get("mode", "")),
         "input_type": reply_run_input_type(item),
         "image_count": item.get("image_count", 0),
+        "unit_cost": int(item.get("unit_cost", 0) or 0),
+        "charge_source": item.get("charge_source", ""),
         "status": item.get("status", ""),
         "answer": {
             "reply": answer.get("reply", ""),
@@ -1297,16 +1444,35 @@ def public_upload(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_redeem_code(item: dict[str, Any]) -> dict[str, Any]:
+    max_uses = int(item.get("max_uses", 0) or 0)
+    used_count = int(item.get("used_count", 0) or 0)
     return {
         "code": item.get("code", ""),
+        "type": item.get("type", "credits"),
+        "credits": int(item.get("credits", item.get("daily_reply_quota", 0)) or 0),
+        "duration_days": int(item.get("duration_days", 0) or 0),
         "daily_reply_quota": item.get("daily_reply_quota", 0),
-        "max_uses": item.get("max_uses", 0),
-        "used_count": item.get("used_count", 0),
+        "max_uses": max_uses,
+        "used_count": used_count,
+        "remaining_uses": max(0, max_uses - used_count) if max_uses else None,
         "status": item.get("status", ""),
         "expires_at": item.get("expires_at", ""),
         "note": item.get("note", ""),
         "created_at": item.get("created_at", ""),
         "updated_at": item.get("updated_at", ""),
+    }
+
+
+def public_redemption(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "redemption_id": item.get("redemption_id", ""),
+        "user_id": item.get("user_id", ""),
+        "code": item.get("code", ""),
+        "type": item.get("type", "credits"),
+        "credits": int(item.get("credits", item.get("daily_reply_quota", 0)) or 0),
+        "duration_days": int(item.get("duration_days", 0) or 0),
+        "time_pass_expires_at": item.get("granted_time_pass_expires_at", ""),
+        "created_at": item.get("created_at", ""),
     }
 
 
@@ -1414,6 +1580,26 @@ def admin_page_html() -> str:
         <div class="actions" style="margin-top:14px">
           <a class="button secondary" href="/api/v1/admin/feedback/export.zip" id="export">导出审核包 ZIP</a>
         </div>
+        <form id="redeemForm" style="margin-top:16px">
+          <h2>兑换码</h2>
+          <div class="fields">
+            <label>类型
+              <select name="type"><option value="credits">积分码</option><option value="time_pass">时间卡</option></select>
+            </label>
+            <label>积分<input name="credits" type="number" min="0" value="10"></label>
+            <label>天数<input name="duration_days" type="number" min="0" value="7"></label>
+            <label>可用人数<input name="max_uses" type="number" min="0" value="1"></label>
+            <label>生成数量<input name="count" type="number" min="1" max="1000" value="1"></label>
+            <label>前缀<input name="prefix" placeholder="VIP"></label>
+            <label class="full">过期时间<input name="expires_at" placeholder="2026-12-31T23:59:59"></label>
+            <label class="full">备注<input name="note"></label>
+          </div>
+          <div class="actions" style="margin-top:10px"><button type="submit">生成兑换码</button></div>
+        </form>
+        <table style="margin-top:12px">
+          <thead><tr><th>兑换码</th><th>类型</th><th>权益</th><th>使用</th><th>状态</th></tr></thead>
+          <tbody id="redeemCodes"></tbody>
+        </table>
       </div>
       <div class="panel">
         <h2>产品配置</h2>
@@ -1431,8 +1617,15 @@ def admin_page_html() -> str:
             <label>RAG 召回数量
               <input name="rag_max_num_results" type="number" min="1" max="10">
             </label>
-            <label>每日额度
-              <input name="daily_reply_quota" type="number" min="1">
+            <input name="daily_reply_quota" type="hidden">
+            <label>初始积分
+              <input name="initial_credits" type="number" min="0">
+            </label>
+            <label>时间卡每日积分上限
+              <input name="time_pass_daily_credit_cap" type="number" min="0">
+            </label>
+            <label>兑换码长度
+              <input name="redeem_code_length" type="number" min="6" max="24">
             </label>
             <label>网页 IP 每日额度
               <input name="web_ip_daily_quota" type="number" min="0">
@@ -1521,6 +1714,7 @@ def admin_page_html() -> str:
     const tokenInput = document.querySelector("#token");
     const statusEl = document.querySelector("#status");
     const form = document.querySelector("#configForm");
+    const redeemForm = document.querySelector("#redeemForm");
     tokenInput.value = localStorage.getItem("baiou_admin_token") || "";
 
     function headers() {
@@ -1587,6 +1781,9 @@ def admin_page_html() -> str:
       form.vector_store_ids.value = (cfg.rag.vector_store_ids || []).join(",");
       form.rag_max_num_results.value = cfg.rag.max_num_results || 3;
       form.daily_reply_quota.value = cfg.limits.daily_reply_quota || 10;
+      form.initial_credits.value = cfg.limits.initial_credits || 0;
+      form.time_pass_daily_credit_cap.value = cfg.limits.time_pass_daily_credit_cap || 0;
+      form.redeem_code_length.value = cfg.limits.redeem_code_length || 8;
       form.web_ip_daily_quota.value = cfg.limits.web_ip_daily_quota || 0;
       form.web_site_daily_quota.value = cfg.limits.web_site_daily_quota || 0;
       form.fast_unit_cost.value = (cfg.limits.mode_unit_costs || {}).bailian_rag_fast || 1;
@@ -1620,12 +1817,11 @@ def admin_page_html() -> str:
         <tr data-user-id="${escapeHtml(row.user_id)}">
           <td><strong>${escapeHtml(row.user_id)}</strong><br><span class="tag">${escapeHtml(row.nickname || "无昵称")}</span> ${row.has_openid ? '<span class="tag ok">openid</span>' : '<span class="tag">无 openid</span>'}<br><span class="tag">创建 ${escapeHtml(row.created_at)}</span></td>
           <td>${escapeHtml(row.last_ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.last_ip_hash || "")}</span><br><span class="tag">session ${escapeHtml(row.last_session_at || "-")}</span></td>
-          <td>今日 ${row.today_usage || 0} / ${row.effective_daily_reply_quota || 0}<br>总计 ${row.total_usage || 0}<br><span class="tag">活跃 ${escapeHtml(row.last_activity_at || "-")}</span></td>
-          <td><input class="mini-input quota-input" type="number" min="0" value="${row.quota_override ?? ""}" placeholder="默认"><br><label style="display:inline-flex;gap:6px;margin-top:6px"><input class="mini-check disabled-input" type="checkbox" ${row.disabled ? "checked" : ""}>禁用</label></td>
-          <td><div class="row-actions"><button type="button" data-action="save-quota">保存</button><button class="secondary" type="button" data-action="clear-quota">清空</button></div></td>
+          <td>今日 ${row.today_usage || 0}<br>总计 ${row.total_usage || 0}<br><span class="tag">活跃 ${escapeHtml(row.last_activity_at || "-")}</span></td>
+          <td>积分 ${row.credits_balance || 0}<br><span class="tag">权益至 ${escapeHtml(row.time_pass_expires_at || "-")}</span><br><input class="mini-input credits-delta-input" type="number" value="" placeholder="+/-"><input class="mini-input pass-input" value="${escapeHtml(row.time_pass_expires_at || "")}" placeholder="有效期"><br><label style="display:inline-flex;gap:6px;margin-top:6px"><input class="mini-check disabled-input" type="checkbox" ${row.disabled ? "checked" : ""}>禁用</label></td>
+          <td><div class="row-actions"><button type="button" data-action="save-wallet">保存</button></div></td>
         </tr>`).join("");
-      document.querySelectorAll("[data-action='save-quota']").forEach(button => button.addEventListener("click", () => saveUserQuota(button.closest("tr"))));
-      document.querySelectorAll("[data-action='clear-quota']").forEach(button => button.addEventListener("click", () => clearUserQuota(button.closest("tr"))));
+      document.querySelectorAll("[data-action='save-wallet']").forEach(button => button.addEventListener("click", () => saveUserWallet(button.closest("tr"))));
     }
     function fillIpUsage(rows) {
       document.querySelector("#ipUsage").innerHTML = (rows || []).map(row => `<tr><td>${escapeHtml(row.ip_display || "unknown")}<br><span class="tag">${escapeHtml(row.ip_hash)}</span></td><td>${row.today_units || 0}</td><td>${escapeHtml(row.recent_request_at || row.recent_login_at || "-")}</td><td>${row.user_count || 0}</td></tr>`).join("");
@@ -1648,6 +1844,13 @@ def admin_page_html() -> str:
           <td>${escapeHtml(timingText(row.timings))}</td>
         </tr>`).join("");
     }
+    function fillRedeemCodes(rows) {
+      document.querySelector("#redeemCodes").innerHTML = (rows || []).map(row => {
+        const benefit = row.type === "time_pass" ? `${row.duration_days || 0} 天` : `${row.credits || 0} 积分`;
+        const usage = `${row.used_count || 0} / ${row.max_uses || "不限"}`;
+        return `<tr><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(benefit)}</td><td>${escapeHtml(usage)}</td><td>${escapeHtml(row.status || "")}</td></tr>`;
+      }).join("");
+    }
     async function saveUserQuota(row) {
       const userId = row.dataset.userId;
       const quota = row.querySelector(".quota-input").value;
@@ -1664,16 +1867,30 @@ def admin_page_html() -> str:
       await loadAll();
       setStatus("用户额度已恢复默认");
     }
+    async function saveUserWallet(row) {
+      const userId = row.dataset.userId;
+      const delta = row.querySelector(".credits-delta-input").value;
+      const expiresAt = row.querySelector(".pass-input").value;
+      const disabled = row.querySelector(".disabled-input").checked;
+      setStatus("保存用户积分中...");
+      await api(`/api/v1/admin/users/${encodeURIComponent(userId)}/wallet`, {
+        method: "PATCH",
+        body: JSON.stringify({ credits_delta: delta, time_pass_expires_at: expiresAt, disabled })
+      });
+      await loadAll();
+      setStatus("用户积分已保存");
+    }
     async function loadAll() {
       localStorage.setItem("baiou_admin_token", tokenInput.value.trim());
       setStatus("加载中...");
-      const [cfg, stats, feedback, users, ipUsage, replyRuns] = await Promise.all([
+      const [cfg, stats, feedback, users, ipUsage, replyRuns, redeemCodes] = await Promise.all([
         api("/api/v1/admin/config"),
         api("/api/v1/admin/stats"),
         api("/api/v1/admin/feedback?limit=20"),
         api("/api/v1/admin/users?limit=100"),
         api("/api/v1/admin/ip-usage?limit=100"),
         api("/api/v1/admin/reply-runs?limit=20"),
+        api("/api/v1/admin/redeem-codes?limit=100"),
       ]);
       fillConfig(cfg.config);
       fillMetrics(stats.stats);
@@ -1681,6 +1898,7 @@ def admin_page_html() -> str:
       fillUsers(users.users);
       fillIpUsage(ipUsage.ip_usage);
       fillReplyRuns(replyRuns.reply_runs);
+      fillRedeemCodes(redeemCodes.redeem_codes);
       setStatus("已加载");
     }
     form.addEventListener("submit", async event => {
@@ -1691,6 +1909,9 @@ def admin_page_html() -> str:
         rag: { vector_store_ids: form.vector_store_ids.value, max_num_results: form.rag_max_num_results.value },
         limits: {
           daily_reply_quota: form.daily_reply_quota.value,
+          initial_credits: form.initial_credits.value,
+          time_pass_daily_credit_cap: form.time_pass_daily_credit_cap.value,
+          redeem_code_length: form.redeem_code_length.value,
           web_ip_daily_quota: form.web_ip_daily_quota.value,
           web_site_daily_quota: form.web_site_daily_quota.value,
           mode_unit_costs: {
@@ -1710,6 +1931,23 @@ def admin_page_html() -> str:
       fillConfig(saved.config);
       setStatus("已保存，当前服务已刷新配置");
     });
+    redeemForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const payload = {
+        type: redeemForm.type.value,
+        credits: redeemForm.credits.value,
+        duration_days: redeemForm.duration_days.value,
+        max_uses: redeemForm.max_uses.value,
+        count: redeemForm.count.value,
+        prefix: redeemForm.prefix.value,
+        expires_at: redeemForm.expires_at.value,
+        note: redeemForm.note.value,
+      };
+      setStatus("生成兑换码中...");
+      await api("/api/v1/admin/redeem-codes/generate", { method: "POST", body: JSON.stringify(payload) });
+      await loadAll();
+      setStatus("兑换码已生成");
+    });
     document.querySelector("#load").addEventListener("click", loadAll);
     document.querySelector("#reload").addEventListener("click", loadAll);
   </script>
@@ -1721,6 +1959,17 @@ def parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def redeem_payload_error(code_type: str, credits: int, duration_days: int):
+    clean_type = str(code_type or "credits").strip().lower()
+    if clean_type not in {"credits", "time_pass"}:
+        return fail("redeem_code_type_invalid", "兑换码类型不正确。", 400)
+    if clean_type == "credits" and int(credits) <= 0:
+        return fail("redeem_code_credits_required", "积分码需要配置积分。", 400)
+    if clean_type == "time_pass" and int(duration_days) <= 0:
+        return fail("redeem_code_duration_required", "时间卡需要配置天数。", 400)
+    return None
 
 
 def normalize_reply_input_type(form: Any) -> str:

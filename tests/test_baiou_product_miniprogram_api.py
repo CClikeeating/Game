@@ -19,6 +19,7 @@ def make_config(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
             "max_conversations_per_user": 2,
             "history_turns_for_reply": 1,
             "daily_reply_quota": 10,
+            "grant_initial_credits_to_non_wechat_users": True,
             "max_images_per_reply": 2,
             "min_images_per_reply": 0,
             "max_image_mb": 1,
@@ -246,8 +247,8 @@ def test_reply_uses_only_current_conversation_recent_history(monkeypatch, tmp_pa
     assert "other question" not in final_context
 
 
-def test_daily_reply_quota_blocks_generation(monkeypatch, tmp_path: Path) -> None:
-    config = make_config(tmp_path, daily_reply_quota=1)
+def test_credits_balance_blocks_generation(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, daily_reply_quota=100, initial_credits=1)
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
 
@@ -256,7 +257,7 @@ def test_daily_reply_quota_blocks_generation(monkeypatch, tmp_path: Path) -> Non
 
     assert first.status_code == 200
     assert second.status_code == 429
-    assert second.get_json()["error"]["code"] == "daily_quota_exhausted"
+    assert second.get_json()["error"]["code"] == "credits_insufficient"
     assert len(captured) == 1
 
 
@@ -536,7 +537,7 @@ def test_admin_feedback_review_zip_includes_csv_and_screenshots(monkeypatch, tmp
         assert "review" in archive.read("feedback.csv").decode("utf-8-sig")
 
 
-def test_redeem_code_updates_user_daily_quota(monkeypatch, tmp_path: Path) -> None:
+def test_redeem_code_adds_user_credits(monkeypatch, tmp_path: Path) -> None:
     config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=10)
     client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
     login_and_default_conversation(client)
@@ -551,9 +552,155 @@ def test_redeem_code_updates_user_daily_quota(monkeypatch, tmp_path: Path) -> No
 
     assert created.status_code == 200
     assert redeemed.status_code == 200
-    assert redeemed.get_json()["limits"]["daily_reply_quota"] == 20
-    assert redeemed.get_json()["limits"]["daily_reply_remaining"] == 20
+    assert redeemed.get_json()["limits"]["credits_balance"] == 30
+    assert redeemed.get_json()["limits"]["daily_reply_remaining"] == 30
     assert again.status_code == 409
+
+
+def test_exhausted_redeem_code_reports_exhausted_for_other_user(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    client.post("/api/v1/auth/login", json={"user_id": "user_a"})
+    client.post("/api/v1/auth/login", json={"user_id": "user_b"})
+    client.post(
+        "/api/v1/admin/redeem-codes",
+        headers=admin_headers(),
+        json={"code": "ONE", "type": "credits", "credits": 1, "max_uses": 1},
+    )
+
+    first = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers("user_a"), json={"code": "ONE"})
+    second = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers("user_b"), json={"code": "ONE"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.get_json()["error"]["code"] == "redeem_code_exhausted"
+
+
+def test_admin_can_generate_redeem_codes(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret")
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    generated = client.post(
+        "/api/v1/admin/redeem-codes/generate",
+        headers=admin_headers(),
+        json={"type": "credits", "credits": 5, "count": 2, "prefix": "VIP", "max_uses": 1},
+    )
+    listed = client.get("/api/v1/admin/redeem-codes", headers=admin_headers())
+
+    assert generated.status_code == 200
+    codes = generated.get_json()["redeem_codes"]
+    assert len(codes) == 2
+    assert all(item["code"].startswith("VIP-") for item in codes)
+    assert listed.status_code == 200
+    assert len(listed.get_json()["redeem_codes"]) == 2
+
+
+def test_time_pass_takes_priority_until_daily_cap(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", initial_credits=1, time_pass_daily_credit_cap=2)
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    client.post(
+        "/api/v1/admin/redeem-codes",
+        headers=admin_headers(),
+        json={"code": "WEEK", "type": "time_pass", "duration_days": 7, "max_uses": 1},
+    )
+    redeemed = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers(), json={"code": "WEEK"})
+
+    first = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "question": "one", "mode": "bailian_rag_strategy_quality"},
+    )
+    second = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "two"})
+
+    assert redeemed.status_code == 200
+    assert first.status_code == 200
+    assert first.get_json()["reply_run"]["charge_source"] == "time_pass"
+    assert first.get_json()["limits"]["credits_balance"] == 1
+    assert second.status_code == 200
+    assert second.get_json()["reply_run"]["charge_source"] == "credits"
+    assert second.get_json()["limits"]["credits_balance"] == 0
+
+
+def test_time_pass_cap_excludes_prior_credit_usage(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", initial_credits=3, time_pass_daily_credit_cap=2)
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    before_pass = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "before"})
+    client.post(
+        "/api/v1/admin/redeem-codes",
+        headers=admin_headers(),
+        json={"code": "PASS", "type": "time_pass", "duration_days": 7, "max_uses": 1},
+    )
+    redeemed = client.post("/api/v1/redeem-codes/redeem", headers=auth_headers(), json={"code": "PASS"})
+
+    with_pass = client.post(
+        "/api/v1/replies",
+        headers=auth_headers(),
+        json={"conversation_id": conv, "question": "after", "mode": "bailian_rag_strategy_quality"},
+    )
+
+    assert before_pass.status_code == 200
+    assert before_pass.get_json()["reply_run"]["charge_source"] == "credits"
+    assert redeemed.status_code == 200
+    assert with_pass.status_code == 200
+    assert with_pass.get_json()["reply_run"]["charge_source"] == "time_pass"
+    assert with_pass.get_json()["limits"]["credits_balance"] == 2
+    assert with_pass.get_json()["limits"]["time_pass_daily_used"] == 2
+
+
+def test_expired_time_pass_falls_back_to_credits(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", initial_credits=1, time_pass_daily_credit_cap=20)
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    conv = login_and_default_conversation(client)
+    client.patch(
+        "/api/v1/admin/users/test_user/wallet",
+        headers=admin_headers(),
+        json={"time_pass_expires_at": "2000-01-01T00:00:00"},
+    )
+
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one"})
+
+    assert response.status_code == 200
+    assert response.get_json()["reply_run"]["charge_source"] == "credits"
+    assert response.get_json()["limits"]["credits_balance"] == 0
+
+
+def test_failed_model_result_does_not_charge_credits(monkeypatch, tmp_path: Path) -> None:
+    def fake_failed_reply(**_kwargs):
+        return {
+            "status": "model_unavailable",
+            "run_id": "runtime_failed",
+            "answer": {"reply": "", "coach_analysis": "", "risk_warning": "down"},
+            "reference_segments": [],
+        }
+
+    monkeypatch.setattr(api_app, "run_reply", fake_failed_reply)
+    app = api_app.create_app(make_config(tmp_path, initial_credits=1))
+    client = app.test_client()
+    conv = login_and_default_conversation(client)
+
+    response = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one"})
+
+    assert response.status_code == 200
+    assert response.get_json()["reply_run"]["status"] == "model_unavailable"
+    assert response.get_json()["reply_run"]["charge_source"] == ""
+    assert response.get_json()["limits"]["credits_balance"] == 1
+
+
+def test_web_login_does_not_get_initial_credits_by_default(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        web_access_required=True,
+        web_access_codes=["test-code"],
+        grant_initial_credits_to_non_wechat_users=False,
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+
+    login = client.post("/api/v1/auth/web-login", json={"access_code": "test-code"})
+
+    assert login.status_code == 200
+    assert login.get_json()["limits"]["credits_balance"] == 0
 
 
 def test_admin_reply_runs_include_segmented_model_timings(monkeypatch, tmp_path: Path) -> None:
@@ -638,7 +785,7 @@ def test_client_ip_ignores_forwarded_for_from_untrusted_remote(monkeypatch, tmp_
     assert ip_usage[0]["ip_display"] == "198.51.100.*"
 
 
-def test_user_quota_override_zero_and_clear_restore_default(monkeypatch, tmp_path: Path) -> None:
+def test_user_disable_and_clear_restore_default(monkeypatch, tmp_path: Path) -> None:
     config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=2)
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
@@ -646,7 +793,7 @@ def test_user_quota_override_zero_and_clear_restore_default(monkeypatch, tmp_pat
     blocked_override = client.patch(
         "/api/v1/admin/users/test_user/quota",
         headers=admin_headers(),
-        json={"daily_reply_quota": 0},
+        json={"disabled": True},
     )
     blocked = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "blocked"})
     cleared = client.delete("/api/v1/admin/users/test_user/quota", headers=admin_headers())
@@ -654,25 +801,29 @@ def test_user_quota_override_zero_and_clear_restore_default(monkeypatch, tmp_pat
 
     assert blocked_override.status_code == 200
     assert blocked.status_code == 429
-    assert blocked.get_json()["error"]["code"] == "daily_quota_exhausted"
+    assert blocked.get_json()["error"]["code"] == "user_disabled"
     assert cleared.status_code == 200
     assert restored.status_code == 200
     assert len(captured) == 1
 
 
-def test_user_quota_override_blocks_after_effective_limit(monkeypatch, tmp_path: Path) -> None:
-    config = make_config(tmp_path, admin_token="admin-secret", daily_reply_quota=5)
+def test_admin_wallet_adjustment_restores_credits(monkeypatch, tmp_path: Path) -> None:
+    config = make_config(tmp_path, admin_token="admin-secret", initial_credits=1)
     client, captured = client_with_runtime(monkeypatch, tmp_path, config)
     conv = login_and_default_conversation(client)
 
-    client.patch("/api/v1/admin/users/test_user/quota", headers=admin_headers(), json={"daily_reply_quota": 1})
     first = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "one"})
     second = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "two"})
+    adjusted = client.patch("/api/v1/admin/users/test_user/wallet", headers=admin_headers(), json={"credits_delta": 2})
+    third = client.post("/api/v1/replies", headers=auth_headers(), json={"conversation_id": conv, "question": "three"})
 
     assert first.status_code == 200
-    assert first.get_json()["limits"]["daily_reply_quota"] == 1
     assert second.status_code == 429
-    assert len(captured) == 1
+    assert second.get_json()["error"]["code"] == "credits_insufficient"
+    assert adjusted.status_code == 200
+    assert adjusted.get_json()["user"]["credits_balance"] == 2
+    assert third.status_code == 200
+    assert len(captured) == 2
 
 
 def test_admin_site_quota_reports_used_and_remaining(monkeypatch, tmp_path: Path) -> None:

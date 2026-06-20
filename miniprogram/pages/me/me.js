@@ -11,6 +11,7 @@ Page({
     paymentEnabled: false,
     contactQq: "1179123330",
     redeemCode: "",
+    timePassText: "暂无有效权益",
     redeeming: false
   },
 
@@ -38,9 +39,11 @@ Page({
     const me = await api.request("/api/v1/me")
     const announcements = await api.request("/api/v1/announcements")
     const billing = await api.request("/api/v1/billing/products")
+    app.globalData.limits = me.limits || app.globalData.limits || {}
     this.setData({
       user: me.user || {},
-      limits: me.limits || app.globalData.limits || {},
+      limits: app.globalData.limits,
+      timePassText: formatTimePass(me.limits || {}),
       announcements: announcements.announcements || [],
       products: billing.products || [],
       paymentEnabled: !!billing.payment_enabled,
@@ -73,3 +76,8 @@ Page({
     }
   }
 })
+
+function formatTimePass(limits = {}) {
+  if (!limits.time_pass_active || !limits.time_pass_expires_at) return "暂无有效权益"
+  return `有效至 ${limits.time_pass_expires_at}`
+}
