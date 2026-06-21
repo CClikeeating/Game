@@ -4,6 +4,7 @@
     "pages/library/library",
     "pages/me/me"
   ],
+  "sitemapLocation": "sitemap.json",
   "window": {
     "navigationBarTitleText": "分享",
     "navigationBarBackgroundColor": "#f8f4ee",

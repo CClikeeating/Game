@@ -15,6 +15,7 @@ __pycache__/
 .deploy/
 .codegraph/
 .codex-remote-attachments/
+.worktrees/
 
 # Local secrets and model logs
 .env

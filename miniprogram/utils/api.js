@@ -4,6 +4,13 @@ function baseUrl() {
   return app.globalData.apiBaseUrl.replace(/\/$/, "")
 }
 
+function assetUrl(url) {
+  const value = (url || "").trim()
+  if (!value) return ""
+  if (/^(https?:|wxfile:|cloud:|data:)/.test(value)) return value
+  return `${baseUrl()}${value.charAt(0) === "/" ? value : `/${value}`}`
+}
+
 function token() {
   return app.globalData.token || wx.getStorageSync("baiou_token") || ""
 }
@@ -150,4 +157,4 @@ function uploadAvatar(filePath) {
   })
 }
 
-module.exports = { request, uploadImage, uploadAvatar, ensureLogin, reloginAfterAuthError, clearSession, isAuthError, loginWithWechatCode }
+module.exports = { request, uploadImage, uploadAvatar, assetUrl, ensureLogin, reloginAfterAuthError, clearSession, isAuthError, loginWithWechatCode }

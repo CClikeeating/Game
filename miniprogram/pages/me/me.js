@@ -14,6 +14,7 @@ Page({
     timePassText: "暂无有效权益",
     redeeming: false,
     profileNickname: "",
+    profileAvatarRawUrl: "",
     profileAvatarUrl: "",
     profileSaving: false
   },
@@ -47,7 +48,8 @@ Page({
       user: me.user || {},
       limits: app.globalData.limits,
       profileNickname: (me.user && me.user.nickname) || "",
-      profileAvatarUrl: (me.user && me.user.avatar_url) || "",
+      profileAvatarRawUrl: (me.user && me.user.avatar_url) || "",
+      profileAvatarUrl: api.assetUrl(me.user && me.user.avatar_url),
       timePassText: formatTimePass(me.limits || {}),
       announcements: announcements.announcements || [],
       products: billing.products || [],
@@ -71,8 +73,9 @@ Page({
     try {
       const data = await api.uploadAvatar(avatarUrl)
       const user = data.user || this.data.user
+      const rawUrl = user.avatar_url || data.avatar_url || avatarUrl
       app.globalData.user = user
-      this.setData({ user, profileAvatarUrl: user.avatar_url || data.avatar_url || avatarUrl })
+      this.setData({ user, profileAvatarRawUrl: rawUrl, profileAvatarUrl: api.assetUrl(rawUrl) })
       wx.showToast({ title: "头像已保存", icon: "none" })
     } catch (err) {
       wx.showToast({ title: err.message || "头像保存失败", icon: "none" })
@@ -88,12 +91,13 @@ Page({
         method: "PATCH",
         data: {
           nickname: this.data.profileNickname,
-          avatar_url: this.data.profileAvatarUrl
+          avatar_url: this.data.profileAvatarRawUrl
         }
       })
       const user = data.user || this.data.user
+      const rawUrl = user.avatar_url || this.data.profileAvatarRawUrl
       app.globalData.user = user
-      this.setData({ user, profileNickname: user.nickname || "", profileAvatarUrl: user.avatar_url || this.data.profileAvatarUrl })
+      this.setData({ user, profileNickname: user.nickname || "", profileAvatarRawUrl: rawUrl, profileAvatarUrl: api.assetUrl(rawUrl) })
       wx.showToast({ title: "资料已保存", icon: "none" })
     } catch (err) {
       wx.showToast({ title: err.message || "保存失败", icon: "none" })
