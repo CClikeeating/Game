@@ -83,9 +83,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 def create_app(config: dict[str, Any] | None = None, store: ProductStore | None = None) -> Flask:
     config = sanitize_api_config(config or load_api_config())
+    mark_admin_config_seen(config)
     store = store or ProductStore(config["sqlite_path"])
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = int(config["max_images_per_reply"]) * int(config["max_image_bytes"]) + 1024 * 1024
+    sync_upload_content_limit(app, config)
+
+    @app.before_request
+    def refresh_runtime_admin_config():
+        if refresh_admin_config_if_changed(config):
+            sync_upload_content_limit(app, config)
 
     @app.get("/api/v1/health")
     def health():
@@ -552,8 +558,11 @@ def create_app(config: dict[str, Any] | None = None, store: ProductStore | None 
         if auth_error:
             return auth_error
         payload = request.get_json(silent=True) or {}
+        cleaned = clean_admin_config_payload(payload, config)
         saved = save_admin_config(config, payload)
-        apply_admin_config(config, clean_admin_config_payload(payload, config))
+        apply_admin_config(config, cleaned)
+        mark_admin_config_seen(config)
+        sync_upload_content_limit(app, config)
         return ok({"config": public_admin_config(config), "saved": saved})
 
     @app.get("/api/v1/admin/feedback/export.csv")
@@ -709,6 +718,7 @@ def load_api_config(path: str | Path | None = None) -> dict[str, Any]:
         "admin_login_max_attempts": int(os.environ.get("BAIOU_ADMIN_LOGIN_MAX_ATTEMPTS") or admin.get("login_max_attempts", 5)),
         "admin_login_window_seconds": int(os.environ.get("BAIOU_ADMIN_LOGIN_WINDOW_SECONDS") or admin.get("login_window_seconds", 600)),
         "admin_config_path": str(admin_config_path),
+        "admin_config_refresh_seconds": float(os.environ.get("BAIOU_ADMIN_CONFIG_REFRESH_SECONDS") or admin.get("config_refresh_seconds", 1.0)),
         "trusted_proxy_ips": configured_list(os.environ.get("BAIOU_TRUSTED_PROXY_IPS") or network.get("trusted_proxy_ips", ["127.0.0.1", "::1"])),
         "upload_retention_days": int(os.environ.get("BAIOU_UPLOAD_RETENTION_DAYS") or retention.get("upload_days", 30)),
         "run_retention_days": int(os.environ.get("BAIOU_RUN_RETENTION_DAYS") or retention.get("run_days", 30)),
@@ -1062,8 +1072,50 @@ def save_admin_config(config: dict[str, Any], payload: dict[str, Any]) -> str:
     cleaned = clean_admin_config_payload(payload, config)
     path = resolve_path(config.get("admin_config_path") or "outputs/baiou/product/admin_config.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
     return str(path)
+
+
+def sync_upload_content_limit(app: Flask, config: dict[str, Any]) -> None:
+    app.config["MAX_CONTENT_LENGTH"] = int(config["max_images_per_reply"]) * int(config["max_image_bytes"]) + 1024 * 1024
+
+
+def admin_config_file_mtime(config: dict[str, Any]) -> float:
+    path = resolve_path(config.get("admin_config_path") or "outputs/baiou/product/admin_config.json")
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def mark_admin_config_seen(config: dict[str, Any]) -> None:
+    config["_admin_config_mtime"] = admin_config_file_mtime(config)
+    config["_admin_config_checked_at"] = time.time()
+
+
+def refresh_admin_config_if_changed(config: dict[str, Any], force: bool = False) -> bool:
+    interval = max(0.0, float(config.get("admin_config_refresh_seconds", 1.0) or 0.0))
+    now = time.time()
+    if not force and now - float(config.get("_admin_config_checked_at", 0.0) or 0.0) < interval:
+        return False
+    config["_admin_config_checked_at"] = now
+    path = resolve_path(config.get("admin_config_path") or "outputs/baiou/product/admin_config.json")
+    mtime = admin_config_file_mtime(config)
+    if not force and mtime == float(config.get("_admin_config_mtime", 0.0) or 0.0):
+        return False
+    config["_admin_config_mtime"] = mtime
+    if not mtime:
+        return False
+    try:
+        loaded = load_data(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    apply_admin_config(config, loaded)
+    return True
 
 
 def clean_admin_config_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:

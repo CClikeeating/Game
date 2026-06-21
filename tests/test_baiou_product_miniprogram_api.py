@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from io import BytesIO
 from pathlib import Path
@@ -965,3 +966,46 @@ def test_admin_config_can_be_saved_and_refreshed(monkeypatch, tmp_path: Path) ->
     assert current["retention"]["run_days"] == 45
     assert current["announcement"]["title"] == "notice"
     assert health["default_mode"] == "bailian_rag_strategy_quality"
+
+
+def test_admin_config_file_change_refreshes_worker_config(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "admin_config.json"
+    config = make_config(
+        tmp_path,
+        admin_token="admin-secret",
+        admin_config_path=str(config_path),
+        admin_config_refresh_seconds=0,
+        daily_reply_quota=10,
+        initial_credits=5,
+        time_pass_daily_credit_cap=20,
+        max_images_per_reply=2,
+        max_image_mb=1,
+        max_image_bytes=1024 * 1024,
+    )
+    client, _captured = client_with_runtime(monkeypatch, tmp_path, config)
+    assert client.get("/api/v1/health").get_json()["limits"]["time_pass_daily_credit_cap"] == 20
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "limits": {
+                    "daily_reply_quota": 44,
+                    "initial_credits": 6,
+                    "time_pass_daily_credit_cap": 40,
+                    "max_images_per_reply": 3,
+                    "max_image_mb": 2,
+                }
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    health = client.get("/api/v1/health").get_json()
+
+    assert health["limits"]["daily_reply_quota"] == 44
+    assert health["limits"]["initial_credits"] == 6
+    assert health["limits"]["time_pass_daily_credit_cap"] == 40
+    assert health["limits"]["max_images_per_reply"] == 3
+    assert client.application.config["MAX_CONTENT_LENGTH"] == 3 * 2 * 1024 * 1024 + 1024 * 1024
