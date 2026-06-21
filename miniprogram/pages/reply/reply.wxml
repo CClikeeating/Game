@@ -54,7 +54,8 @@
       <view class="grow">
         <view class="result-title">推荐接话</view>
       </view>
-      <view class="status-dot">{{result.status}}</view>
+      <button class="copy-btn" bindtap="copyReply">复制</button>
+      <view class="status-dot">{{resultStatusText}}</view>
     </view>
     <view class="mode-block">
       <view class="mode-row">

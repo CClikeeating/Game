@@ -5,6 +5,7 @@ const app = getApp()
 const MODE_FAST = "bailian_rag_fast"
 const MODE_STRATEGY_QUALITY = "bailian_rag_strategy_quality"
 const ALLOWED_MODES = [MODE_FAST, MODE_STRATEGY_QUALITY]
+const SCREENSHOT_DEFAULT_QUESTION = "我该怎么回"
 
 function normalizeMode(mode) {
   return ALLOWED_MODES.includes(mode) ? mode : MODE_FAST
@@ -18,9 +19,16 @@ function modeCosts(limits = {}) {
   }
 }
 
+function statusText(status) {
+  if (status === "model_success") return "成功"
+  return status || ""
+}
+
 Page({
   data: {
-    question: "我该怎么回",
+    question: SCREENSHOT_DEFAULT_QUESTION,
+    textQuestion: "",
+    screenshotQuestion: SCREENSHOT_DEFAULT_QUESTION,
     context: "",
     entryType: "screenshot",
     mode: MODE_STRATEGY_QUALITY,
@@ -32,6 +40,7 @@ Page({
     limits: app.globalData.limits || {},
     serviceReady: false,
     result: null,
+    resultStatusText: "",
     feedbackNotes: "",
     loading: false,
     drawerOpen: false,
@@ -143,7 +152,7 @@ Page({
     const current = this.data.conversations.find(item => item.conversation_id === id) || {}
     app.globalData.currentConversationId = id
     wx.setStorageSync("baiou_current_conversation_id", id)
-    this.setData({ currentConversation: current, drawerOpen: false, result: null })
+    this.setData({ currentConversation: current, drawerOpen: false, result: null, resultStatusText: "" })
   },
 
   async deleteConversation(e) {
@@ -156,7 +165,11 @@ Page({
   },
 
   onQuestionInput(e) {
-    this.setData({ question: e.detail.value })
+    const question = e.detail.value
+    this.setData({
+      question,
+      [this.data.entryType === "text_only" ? "textQuestion" : "screenshotQuestion"]: question
+    })
   },
 
   onContextInput(e) {
@@ -169,7 +182,10 @@ Page({
 
   selectEntry(e) {
     const entryType = e.currentTarget.dataset.entry || "text_only"
-    const update = { entryType }
+    const update = {
+      entryType,
+      question: entryType === "text_only" ? this.data.textQuestion : (this.data.screenshotQuestion || SCREENSHOT_DEFAULT_QUESTION)
+    }
     if (entryType === "text_only") {
       update.mode = MODE_FAST
       update.images = []
@@ -255,6 +271,7 @@ Page({
       app.globalData.limits = limits
       this.setData({
         result: data.reply_run,
+        resultStatusText: statusText(data.reply_run && data.reply_run.status),
         limits,
         ...modeCosts(limits),
         images: [],
@@ -266,6 +283,18 @@ Page({
     } finally {
       this.setData({ loading: false })
     }
+  },
+
+  copyReply() {
+    const reply = this.data.result && this.data.result.answer && this.data.result.answer.reply || ""
+    if (!reply.trim()) {
+      this.toast("暂无可复制内容")
+      return
+    }
+    wx.setClipboardData({
+      data: reply,
+      success: () => this.toast("已复制")
+    })
   },
 
   toggleFold(e) {

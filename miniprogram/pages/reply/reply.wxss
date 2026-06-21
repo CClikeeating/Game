@@ -354,6 +354,19 @@
   line-height: 1.2;
 }
 
+.copy-btn {
+  flex-shrink: 0;
+  min-width: 92rpx;
+  height: 54rpx;
+  padding: 0 18rpx;
+  border-radius: 999rpx;
+  background: #176b5d;
+  color: #ffffff;
+  font-size: 23rpx;
+  font-weight: 800;
+  line-height: 54rpx;
+}
+
 .status-dot {
   max-width: 220rpx;
   padding: 8rpx 14rpx;
