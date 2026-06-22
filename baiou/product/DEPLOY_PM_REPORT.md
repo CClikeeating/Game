@@ -45,6 +45,21 @@ https://baioulove.xyz/api/v1/health
   - `GET /api/v1/admin/feedback/export.zip`
 - 后台原 CSV 导出保留，ZIP 审核包新增截图附件。
 
+## 2026-06-21 后台额度配置跳值修复记录
+
+- 现象：在后台管理页修改初始免费额度和时间卡每日积分上限后，刷新后台或小程序“我的”页时，额度会在旧值和新值之间来回跳。
+- 确认方式：连续请求 `https://baioulove.xyz/api/v1/health`，曾观察到不同请求返回不同的 `initial_credits` / `time_pass_daily_credit_cap`。
+- 根因：线上后端使用 Gunicorn `--workers 2 --threads 2`。后台保存配置时只更新处理该请求的 worker 内存；其它 worker 仍保留旧内存配置。Nginx/客户端随机打到不同 worker 时，就会看到旧值和新值交替。
+- 修复提交：`686e379 Fix runtime admin config sync`。
+- 修复内容：
+  - 后台配置文件 `BAIOU_ADMIN_CONFIG` 作为后台可管理配置的准来源。
+  - 每个 worker 在请求前按配置文件更新时间自动刷新运行时配置，默认检查间隔 1 秒，可通过 `BAIOU_ADMIN_CONFIG_REFRESH_SECONDS` 调整。
+  - 后台保存配置改为先写临时文件再原子替换，避免其它 worker 读取到半截 JSON。
+  - 配置刷新后同步更新 Flask `MAX_CONTENT_LENGTH`，确保后台调整图片上传限制后运行时也跟着变。
+- 测试：本地 `python -m pytest -q --basetemp=outputs/test-tmp` 通过，结果 `102 passed`；新增回归测试覆盖“worker 内存旧配置 + 配置文件已变化”的场景。
+- 部署：服务器新 release 为 `/opt/baiou/releases/release_20260621_runtime_config_sync`，`/opt/baiou/current` 已切换到该 release，`baiou` 服务已重启。
+- 线上验证：`git log -1 --oneline` 显示 `686e379 Fix runtime admin config sync`；连续三次请求 `/api/v1/health` 返回一致，确认 `initial_credits=5`、`time_pass_daily_credit_cap=40` 不再跳值。
+
 ## PM 需要操作
 
 1. 微信公众平台 -> 开发管理 -> 开发设置 -> 服务器域名：

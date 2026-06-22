@@ -5,13 +5,12 @@ const app = getApp()
 Page({
   data: {
     user: {},
-    limits: app.globalData.limits || {},
+    limits: {},
     announcements: [],
-    products: [],
-    paymentEnabled: false,
-    contactQq: "1179123330",
+    limitsReady: false,
     redeemCode: "",
-    timePassText: "暂无有效权益",
+    timePassText: "加载中",
+    timePassStats: formatTimePassStats({}, false),
     redeeming: false,
     profileNickname: "",
     profileAvatarRawUrl: "",
@@ -21,7 +20,17 @@ Page({
 
   onShow() {
     tabbar.setSelected(this, 2)
+    if (wx.pageScrollTo) wx.pageScrollTo({ scrollTop: 0, duration: 0 })
+    this.resetLimitDisplay("加载中")
     this.load()
+  },
+
+  onHide() {
+    this.resetLimitDisplay("加载中")
+  },
+
+  resetLimitDisplay(timePassText) {
+    this.setData({ limits: {}, limitsReady: false, timePassText, timePassStats: formatTimePassStats({}, false) })
   },
 
   async load() {
@@ -33,7 +42,7 @@ Page({
         await api.reloginAfterAuthError(err)
         await this.refreshPageData()
       } catch (retryErr) {
-        this.setData({ limits: app.globalData.limits || this.data.limits })
+        this.resetLimitDisplay("加载失败")
         wx.showToast({ title: retryErr.message || "加载失败", icon: "none" })
       }
     }
@@ -42,19 +51,18 @@ Page({
   async refreshPageData() {
     const me = await api.request("/api/v1/me")
     const announcements = await api.request("/api/v1/announcements")
-    const billing = await api.request("/api/v1/billing/products")
-    app.globalData.limits = me.limits || app.globalData.limits || {}
+    const limits = me.limits || {}
+    app.globalData.limits = limits
     this.setData({
       user: me.user || {},
-      limits: app.globalData.limits,
+      limits,
+      limitsReady: true,
       profileNickname: (me.user && me.user.nickname) || "",
       profileAvatarRawUrl: (me.user && me.user.avatar_url) || "",
       profileAvatarUrl: api.assetUrl(me.user && me.user.avatar_url),
-      timePassText: formatTimePass(me.limits || {}),
-      announcements: announcements.announcements || [],
-      products: billing.products || [],
-      paymentEnabled: !!billing.payment_enabled,
-      contactQq: billing.contact_qq || "1179123330"
+      timePassText: formatTimePass(limits),
+      timePassStats: formatTimePassStats(limits),
+      announcements: announcements.announcements || []
     })
   },
 
@@ -118,7 +126,9 @@ Page({
         method: "POST",
         data: { code }
       })
-      this.setData({ limits: data.limits || this.data.limits, redeemCode: "" })
+      const limits = data.limits || this.data.limits
+      app.globalData.limits = limits
+      this.setData({ limits, limitsReady: true, timePassText: formatTimePass(limits), timePassStats: formatTimePassStats(limits), redeemCode: "" })
       wx.showToast({ title: "兑换成功", icon: "none" })
     } catch (err) {
       wx.showToast({ title: err.message || "兑换失败", icon: "none" })
@@ -131,4 +141,22 @@ Page({
 function formatTimePass(limits = {}) {
   if (!limits.time_pass_active || !limits.time_pass_expires_at) return "暂无有效权益"
   return `有效至 ${limits.time_pass_expires_at}`
+}
+
+function formatTimePassStats(limits = {}, ready = true) {
+  if (!ready) {
+    return [
+      { label: "今日剩余", value: "--" },
+      { label: "每日上限", value: "--" },
+      { label: "今日已用", value: "--" }
+    ]
+  }
+  const cap = Number(limits.time_pass_daily_credit_cap || 0)
+  const used = Number(limits.time_pass_daily_used || 0)
+  const remaining = Number(limits.time_pass_daily_remaining || 0)
+  return [
+    { label: "今日剩余", value: String(Math.max(0, remaining)) },
+    { label: "每日上限", value: String(Math.max(0, cap)) },
+    { label: "今日已用", value: String(Math.max(0, used)) }
+  ]
 }

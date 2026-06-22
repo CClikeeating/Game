@@ -13,23 +13,7 @@ App({
     apiBaseUrl: "",
     token: "",
     user: null,
-    limits: {
-      max_conversations_per_user: 5,
-      history_turns_for_reply: 6,
-      credits_balance: 10,
-      time_pass_active: false,
-      time_pass_expires_at: "",
-      time_pass_daily_credit_cap: 20,
-      time_pass_daily_used: 0,
-      time_pass_daily_remaining: 0,
-      mode_unit_costs: {
-        bailian_rag_fast: 1,
-        bailian_rag_strategy_quality: 2
-      },
-      max_images_per_reply: 3,
-      min_images_per_reply: 1,
-      max_image_mb: 8
-    },
+    limits: {},
     currentConversationId: ""
   },
 

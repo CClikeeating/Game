@@ -1,5 +1,5 @@
-<view class="page">
-  <view class="panel">
+<view class="page me-page">
+  <view class="account-panel">
     <view class="section-title">账号</view>
     <view class="profile-row">
       <button class="avatar-button" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
@@ -12,34 +12,42 @@
       </view>
     </view>
     <view class="muted">用户：{{user.user_id || "未登录"}}</view>
-    <view class="muted">当前积分：{{limits.credits_balance || 0}}</view>
+    <view class="muted">当前积分：{{limitsReady ? limits.credits_balance : "--"}}</view>
     <view class="muted">权益状态：{{timePassText}}</view>
-  </view>
-
-  <view class="panel">
-    <view class="section-title">公告</view>
-    <view wx:for="{{announcements}}" wx:key="announcement_id" style="margin-bottom: 16rpx">
-      <view>{{item.title}}</view>
-      <view class="muted">{{item.content}}</view>
-    </view>
-    <view wx:if="{{!announcements.length}}" class="muted">暂无公告</view>
-  </view>
-
-  <view class="panel">
-    <view class="section-title">更多积分</view>
-    <view wx:for="{{products}}" wx:key="product_id" class="row" style="margin-bottom: 12rpx">
-      <view class="grow">
-        <view>{{item.name}}</view>
-        <view class="muted">{{item.description}}</view>
+    <view class="pass-grid">
+      <view wx:for="{{timePassStats}}" wx:key="label" class="pass-stat">
+        <view class="pass-value">{{item.value}}</view>
+        <view class="pass-label">{{item.label}}</view>
       </view>
     </view>
-    <view wx:if="{{!products.length}}" class="muted">如需更多积分，请联系作者。</view>
-    <view class="muted">作者 QQ：{{contactQq}}</view>
   </view>
 
-  <view class="panel">
-    <view class="section-title">兑换码</view>
-    <input class="input" placeholder="输入兑换码" value="{{redeemCode}}" bindinput="onRedeemCodeInput" />
-    <button class="button" style="margin-top: 16rpx" loading="{{redeeming}}" disabled="{{redeeming}}" bindtap="submitRedeemCode">兑换</button>
+  <view class="info-stack">
+    <view class="info-card">
+      <view class="info-head">
+        <view class="section-title">公告</view>
+      </view>
+      <view wx:for="{{announcements}}" wx:key="announcement_id" class="info-item">
+        <view class="info-title">{{item.title}}</view>
+        <view class="muted">{{item.content}}</view>
+      </view>
+      <view wx:if="{{!announcements.length}}" class="muted">暂无公告</view>
+    </view>
+
+    <view class="info-card">
+      <view class="info-head">
+        <view class="section-title">广告</view>
+      </view>
+      <view class="muted">后续将接入广告，用于获取更多积分。</view>
+      <view class="ad-pill">广告位预留</view>
+    </view>
+
+    <view class="info-card">
+      <view class="section-title">兑换码</view>
+      <view class="redeem-row">
+        <input class="input redeem-input" placeholder="输入兑换码" value="{{redeemCode}}" bindinput="onRedeemCodeInput" />
+        <button class="button redeem-button" loading="{{redeeming}}" disabled="{{redeeming}}" bindtap="submitRedeemCode">兑换</button>
+      </view>
+    </view>
   </view>
 </view>

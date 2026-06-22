@@ -177,6 +177,15 @@ https://baioulove.xyz/api/v1/health
 - 反馈写入、后台统计、反馈 CSV 与截图审核 ZIP 导出已接入。
 - 截图和模型运行明细保留周期默认 30 天，服务器每天凌晨自动清理。
 - 后端已支持微信 `wx.login` 登录链路；小程序正式版必须配置 AppSecret 并关闭内测登录回退。
+- 后台配置文件已作为额度等运营配置的线上准来源。Gunicorn 多 worker 会在请求前自动检查共享配置文件变更，避免后台管理页改额度后出现不同 worker 返回旧值/新值来回跳。
+
+2026-06-21 线上修复记录：
+
+- 问题：后台管理页修改每日积分上限和初始免费额度后，`/api/v1/health` 以及小程序“我的”页可能在旧值和新值之间跳动。
+- 根因：线上服务使用 Gunicorn `--workers 2 --threads 2`，后台保存配置只更新命中请求的 worker 内存，其它 worker 仍保留旧配置。
+- 修复：提交 `686e379 Fix runtime admin config sync`，后端每个 worker 按共享 `BAIOU_ADMIN_CONFIG` 文件的更新时间自动刷新后台可管理配置，并用原子替换方式写入配置文件。
+- 部署：新 release 为 `/opt/baiou/releases/release_20260621_runtime_config_sync`，`/opt/baiou/current` 已切到该 release，服务 `baiou` 已重启。
+- 验证：连续请求 `https://baioulove.xyz/api/v1/health` 返回一致，确认 `initial_credits=5`、`time_pass_daily_credit_cap=40` 不再跳值。
 
 小程序正式发布前仍需完成：
 

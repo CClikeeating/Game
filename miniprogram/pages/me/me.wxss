@@ -1,3 +1,22 @@
+.me-page {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(245, 190, 132, 0.16), transparent 34%),
+    linear-gradient(180deg, #f8f4ee 0%, #f6f7f9 40%, #f4f6f8 100%);
+}
+
+.account-panel,
+.info-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1rpx solid rgba(226, 232, 240, 0.96);
+  border-radius: 22rpx;
+  padding: 24rpx;
+  box-shadow: 0 14rpx 38rpx rgba(29, 39, 53, 0.06);
+}
+
+.account-panel {
+  margin-bottom: 18rpx;
+}
+
 .profile-row {
   display: flex;
   gap: 20rpx;
@@ -38,4 +57,80 @@
   min-height: 64rpx;
   line-height: 64rpx;
   font-size: 26rpx;
+}
+
+.pass-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12rpx;
+  margin-top: 18rpx;
+}
+
+.pass-stat {
+  min-width: 0;
+  padding: 16rpx 10rpx;
+  border-radius: 14rpx;
+  background: #f7f9fc;
+  border: 1rpx solid #e4ebf2;
+  text-align: center;
+}
+
+.pass-value {
+  color: #172033;
+  font-size: 32rpx;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.pass-label {
+  margin-top: 6rpx;
+  color: #7b8494;
+  font-size: 22rpx;
+}
+
+.info-stack {
+  display: grid;
+  gap: 16rpx;
+}
+
+.info-head {
+  margin-bottom: 10rpx;
+}
+
+.info-item {
+  margin-top: 12rpx;
+}
+
+.info-title {
+  color: #1d2735;
+  font-size: 27rpx;
+  font-weight: 800;
+}
+
+.ad-pill {
+  display: inline-flex;
+  margin-top: 14rpx;
+  padding: 8rpx 14rpx;
+  border-radius: 999rpx;
+  background: #fff6e8;
+  color: #9a5a12;
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.redeem-row {
+  display: grid;
+  grid-template-columns: 1fr 156rpx;
+  gap: 12rpx;
+  margin-top: 14rpx;
+  align-items: center;
+}
+
+.redeem-input {
+  min-width: 0;
+}
+
+.redeem-button {
+  min-height: 76rpx;
+  padding: 0 18rpx;
 }

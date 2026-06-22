@@ -37,7 +37,7 @@ Page({
     images: [],
     conversations: [],
     currentConversation: {},
-    limits: app.globalData.limits || {},
+    limits: {},
     serviceReady: false,
     result: null,
     resultStatusText: "",
@@ -64,7 +64,7 @@ Page({
         await api.reloginAfterAuthError(err)
         await this.refreshSessionData()
       } catch (retryErr) {
-        this.setData({ limits: app.globalData.limits || this.data.limits, serviceReady: false })
+        this.setData({ limits: {}, serviceReady: false })
         this.toast(retryErr.message || "初始化失败")
       }
     }
@@ -73,7 +73,7 @@ Page({
   async refreshSessionData() {
     const me = await api.request("/api/v1/me")
     await this.loadConversations()
-    const limits = me.limits || app.globalData.limits || {}
+    const limits = me.limits || {}
     app.globalData.limits = limits
     this.setData({ limits, ...modeCosts(limits), serviceReady: true })
   },
