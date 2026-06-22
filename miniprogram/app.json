@@ -6,7 +6,7 @@
   ],
   "sitemapLocation": "sitemap.json",
   "window": {
-    "navigationBarTitleText": "分享",
+    "navigationBarTitleText": "文案",
     "navigationBarBackgroundColor": "#f8f4ee",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#f7f8fa"
@@ -18,7 +18,7 @@
     "backgroundColor": "#ffffff",
     "borderStyle": "black",
     "list": [
-      {"pagePath": "pages/reply/reply", "text": "分享"},
+      {"pagePath": "pages/reply/reply", "text": "文案"},
       {"pagePath": "pages/library/library", "text": "灵感"},
       {"pagePath": "pages/me/me", "text": "我的"}
     ]

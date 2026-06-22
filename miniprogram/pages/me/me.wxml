@@ -36,10 +36,10 @@
 
     <view class="info-card">
       <view class="info-head">
-        <view class="section-title">广告</view>
+        <view class="section-title">更多积分</view>
       </view>
-      <view class="muted">后续将接入广告，用于获取更多积分。</view>
-      <view class="ad-pill">广告位预留</view>
+      <view class="muted">更多积分获取方式后续开放。</view>
+      <view class="ad-pill">暂未开放</view>
     </view>
 
     <view class="info-card">

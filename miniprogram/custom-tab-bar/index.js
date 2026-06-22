@@ -2,7 +2,7 @@ Component({
   data: {
     selected: 0,
     list: [
-      { pagePath: "/pages/reply/reply", text: "分享" },
+      { pagePath: "/pages/reply/reply", text: "文案" },
       { pagePath: "/pages/library/library", text: "灵感" },
       { pagePath: "/pages/me/me", text: "我的" }
     ]
